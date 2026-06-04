@@ -1,0 +1,11 @@
+nyc_taxi:
+  target: dev
+  outputs:
+    dev:
+      type: trino
+      host: trino-coordinator
+      port: 8080
+      user: dbt
+      database: hive
+      schema: mart
+      threads: 4

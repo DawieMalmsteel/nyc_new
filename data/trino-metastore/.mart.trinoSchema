@@ -1,0 +1,8 @@
+{
+  "writerVersion" : "435",
+  "ownerName" : "dbt",
+  "ownerType" : "USER",
+  "parameters" : {
+    "trino_query_id" : "20260604_072444_00060_zdtg5"
+  }
+}

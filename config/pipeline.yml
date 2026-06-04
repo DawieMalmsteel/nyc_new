@@ -1,0 +1,17 @@
+project_name: nyc-taxi-kafka-first-local
+kafka:
+  bootstrap_servers: localhost:29092
+  topic_events: taxi.trip.events
+  topic_invalid: taxi.trip.invalid
+  topic_dlq: taxi.trip.dlq
+
+paths:
+  raw_base: data/raw/yellow_taxi
+  lookup_csv: data/lookup/taxi_zone_lookup.csv
+  silver_base: data/silver/trips
+  quarantine_base: data/quarantine/invalid_trips
+  checkpoint_base: data/checkpoints/spark_stream_taxi_events
+
+test:
+  max_events: 5000
+  invalid_rate: 0.02

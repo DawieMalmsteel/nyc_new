@@ -1,0 +1,8 @@
+version: 2
+
+models:
+  - name: fact_invalid_trips
+    columns:
+      - name: validation_error
+        tests:
+          - not_null

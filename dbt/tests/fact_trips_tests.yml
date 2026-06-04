@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: fact_trips
+    columns:
+      - name: pickup_ts
+        tests:
+          - not_null
+      - name: total_amount
+        tests:
+          - not_null

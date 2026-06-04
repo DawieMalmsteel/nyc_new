@@ -1,0 +1,288 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: nyc_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: nyc_kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: nyc_kafka_ui
+    ports:
+      - "8080:8080"
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+
+  minio:
+    image: minio/minio:latest
+    container_name: nyc_minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    volumes:
+      - minio_data:/data
+
+  spark-master:
+    image: apache/spark:3.5.1
+    container_name: nyc_spark_master
+    user: "0:0"
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master", "--port", "7077", "--webui-port", "8081"]
+    ports:
+      - "7077:7077"
+      - "8081:8081"
+    volumes:
+      - ./:/opt/project
+
+  spark-worker:
+    image: apache/spark:3.5.1
+    container_name: nyc_spark_worker
+    user: "0:0"
+    depends_on:
+      - spark-master
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077", "--webui-port", "8082", "--cores", "2", "--memory", "4g"]
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./:/opt/project
+
+  topic-init:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: nyc-pipeline-tools:latest
+    container_name: nyc_topic_init
+    profiles: ["tools"]
+    depends_on:
+      - kafka
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project
+    command: ["entrypoint-topic-init"]
+    restart: "no"
+
+  topic-run:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: nyc-pipeline-tools:latest
+    profiles: ["tools"]
+    depends_on:
+      - kafka
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project
+    entrypoint: ["wait-kafka", "kafka:9092"]
+    command: ["python3", "/opt/project/scripts/create_per_run_topic.py", "kafka:9092", "${TOPIC_RUN:-taxi.trip.events}", "3"]
+    restart: "no"
+
+  generator:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: nyc-pipeline-tools:latest
+    container_name: nyc_generator
+    profiles: ["tools"]
+    depends_on:
+      - kafka
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project
+    command: ["entrypoint-generator"]
+    restart: "no"
+
+  quality-report:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: nyc-pipeline-tools:latest
+    container_name: nyc_quality_report
+    profiles: ["tools"]
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project
+    command: ["entrypoint-quality"]
+    restart: "no"
+
+  trino-coordinator:
+    image: trinodb/trino:435
+    container_name: nyc_trino
+    profiles: ["tools", "trino"]
+    ports:
+      - "8083:8080"
+    volumes:
+      - ./docker/trino/etc:/etc/trino
+      - ./data:/data
+    restart: unless-stopped
+
+  trino-bootstrap:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: nyc-pipeline-tools:latest
+    profiles: ["tools", "trino"]
+    depends_on:
+      - trino-coordinator
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project
+    command: ["entrypoint-trino-bootstrap"]
+    restart: "no"
+
+  dbt:
+    build:
+      context: .
+      dockerfile: docker/dbt.Dockerfile
+    image: nyc-dbt:latest
+    container_name: nyc_dbt
+    profiles: ["tools", "dbt"]
+    depends_on:
+      - trino-coordinator
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project/dbt
+    environment:
+      DBT_PROFILES_DIR: /opt/project/dbt
+    command: ["entrypoint-dbt"]
+    restart: "no"
+
+  superset:
+    image: apache/superset:4.0.0
+    container_name: nyc_superset
+    profiles: ["tools", "superset"]
+    depends_on:
+      - trino-coordinator
+    ports:
+      - "8088:8088"
+    environment:
+      SUPERSET_SECRET_KEY: "local-dev-key-with-32-chars-min-1234"
+      PYTHONPATH: "/app/docker"
+    volumes:
+      - ./docker/superset:/app/docker
+    command: ["bash", "/app/docker/entrypoint-superset.sh"]
+    restart: unless-stopped
+
+  airflow-postgres:
+    image: postgres:16-alpine
+    container_name: nyc_airflow_postgres
+    profiles: ["airflow"]
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow-init:
+    build:
+      context: .
+      dockerfile: docker/airflow.Dockerfile
+    container_name: nyc_airflow_init
+    profiles: ["airflow"]
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW_ROLE: init
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__EXECUTOR: "LocalExecutor"
+      AIRFLOW_UID: "0"
+      AIRFLOW_GID: "0"
+    volumes:
+      - ./docker:/docker
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["bash", "/docker/entrypoint-airflow.sh"]
+    restart: "no"
+
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: docker/airflow.Dockerfile
+    container_name: nyc_airflow_webserver
+    profiles: ["airflow"]
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW_ROLE: webserver
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow"
+      AIRFLOW_UID: "0"
+    ports:
+      - "8085:8080"
+    volumes:
+      - ./docker:/docker
+      - ./:/repo
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add: ["958"]
+    command: ["bash", "/docker/entrypoint-airflow.sh"]
+    restart: unless-stopped
+
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: docker/airflow.Dockerfile
+    container_name: nyc_airflow_scheduler
+    profiles: ["airflow"]
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW_ROLE: scheduler
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow"
+      AIRFLOW_UID: "0"
+      AIRFLOW_GID: "0"
+    volumes:
+      - ./docker:/docker
+      - ./:/repo
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add: ["958"]
+    command: ["bash", "/docker/entrypoint-airflow.sh"]
+    restart: unless-stopped
+
+volumes:
+  minio_data:
+  airflow_postgres_data:

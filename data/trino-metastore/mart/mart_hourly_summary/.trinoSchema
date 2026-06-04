@@ -1,0 +1,116 @@
+{
+  "writerVersion" : "435",
+  "owner" : "dbt",
+  "tableType" : "MANAGED_TABLE",
+  "dataColumns" : [ {
+    "name" : "pickup_date",
+    "type" : "date",
+    "properties" : { }
+  }, {
+    "name" : "pickup_hour",
+    "type" : "bigint",
+    "properties" : { }
+  }, {
+    "name" : "pickup_borough",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "trip_count",
+    "type" : "bigint",
+    "properties" : { }
+  }, {
+    "name" : "avg_fare",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "avg_total",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "avg_distance",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "gross_revenue",
+    "type" : "double",
+    "properties" : { }
+  } ],
+  "partitionColumns" : [ ],
+  "parameters" : {
+    "trino_version" : "435",
+    "trino_query_id" : "20260604_110544_00140_ka6fd",
+    "transactional" : "false",
+    "auto.purge" : "false",
+    "numFiles" : "1",
+    "numRows" : "7",
+    "rawDataSize" : "499",
+    "totalSize" : "1137",
+    "STATS_GENERATED_VIA_STATS_TASK" : "workaround for potential lack of HIVE-12730"
+  },
+  "storageFormat" : "ORC",
+  "serdeParameters" : { },
+  "columnStatistics" : {
+    "pickup_date" : {
+      "dateStatistics" : {
+        "min" : "2023-12-31",
+        "max" : "2024-01-01"
+      },
+      "nullsCount" : 0,
+      "distinctValuesCount" : 2
+    },
+    "pickup_hour" : {
+      "integerStatistics" : {
+        "min" : 0,
+        "max" : 23
+      },
+      "nullsCount" : 0,
+      "distinctValuesCount" : 3
+    },
+    "avg_fare" : {
+      "doubleStatistics" : {
+        "min" : 9.299999999999999,
+        "max" : 76.0
+      },
+      "nullsCount" : 0,
+      "distinctValuesCount" : 7
+    },
+    "gross_revenue" : {
+      "doubleStatistics" : {
+        "min" : 42.55,
+        "max" : 23339.83999999998
+      },
+      "nullsCount" : 0,
+      "distinctValuesCount" : 7
+    },
+    "avg_total" : {
+      "doubleStatistics" : {
+        "min" : 14.633333333333335,
+        "max" : 89.75
+      },
+      "nullsCount" : 0,
+      "distinctValuesCount" : 7
+    },
+    "trip_count" : {
+      "integerStatistics" : {
+        "min" : 1,
+        "max" : 910
+      },
+      "nullsCount" : 0,
+      "distinctValuesCount" : 6
+    },
+    "pickup_borough" : {
+      "maxValueSizeInBytes" : 9,
+      "totalSizeInBytes" : 51,
+      "nullsCount" : 0,
+      "distinctValuesCount" : 5
+    },
+    "avg_distance" : {
+      "doubleStatistics" : {
+        "min" : 1.0833333333333333,
+        "max" : 12.985625
+      },
+      "nullsCount" : 0,
+      "distinctValuesCount" : 7
+    }
+  }
+}

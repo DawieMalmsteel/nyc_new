@@ -1,0 +1,20 @@
+version: 2
+
+models:
+  - name: stg_trips
+    columns:
+      - name: pickup_ts
+        tests:
+          - not_null
+      - name: dropoff_ts
+        tests:
+          - not_null
+      - name: trip_distance
+        tests:
+          - not_null
+      - name: total_amount
+        tests:
+          - not_null
+      - name: payment_type
+        tests:
+          - not_null

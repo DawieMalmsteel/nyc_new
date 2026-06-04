@@ -1,0 +1,159 @@
+{
+  "columns" : [ {
+    "name" : "kafka_topic",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "kafka_partition",
+    "type" : "int",
+    "properties" : { }
+  }, {
+    "name" : "kafka_offset",
+    "type" : "bigint",
+    "properties" : { }
+  }, {
+    "name" : "kafka_timestamp",
+    "type" : "timestamp",
+    "properties" : { }
+  }, {
+    "name" : "raw_value",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "event_id",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "event_timestamp",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "source_file",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "vendor_id",
+    "type" : "int",
+    "properties" : { }
+  }, {
+    "name" : "pickup_datetime",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "dropoff_datetime",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "passenger_count",
+    "type" : "int",
+    "properties" : { }
+  }, {
+    "name" : "trip_distance",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "rate_code_id",
+    "type" : "int",
+    "properties" : { }
+  }, {
+    "name" : "store_and_fwd_flag",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "pickup_location_id",
+    "type" : "int",
+    "properties" : { }
+  }, {
+    "name" : "dropoff_location_id",
+    "type" : "int",
+    "properties" : { }
+  }, {
+    "name" : "payment_type",
+    "type" : "int",
+    "properties" : { }
+  }, {
+    "name" : "fare_amount",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "extra",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "mta_tax",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "tip_amount",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "tolls_amount",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "improvement_surcharge",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "total_amount",
+    "type" : "double",
+    "properties" : { }
+  }, {
+    "name" : "pickup_ts",
+    "type" : "timestamp",
+    "properties" : { }
+  }, {
+    "name" : "dropoff_ts",
+    "type" : "timestamp",
+    "properties" : { }
+  }, {
+    "name" : "event_ts",
+    "type" : "timestamp",
+    "properties" : { }
+  }, {
+    "name" : "ingestion_ts",
+    "type" : "timestamp",
+    "properties" : { }
+  }, {
+    "name" : "pickup_date",
+    "type" : "date",
+    "properties" : { }
+  }, {
+    "name" : "pickup_hour",
+    "type" : "int",
+    "properties" : { }
+  }, {
+    "name" : "pickup_borough",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "pickup_zone",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "pickup_service_zone",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "dropoff_borough",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "dropoff_zone",
+    "type" : "string",
+    "properties" : { }
+  }, {
+    "name" : "dropoff_service_zone",
+    "type" : "string",
+    "properties" : { }
+  } ],
+  "parameters" : {
+    "trino_query_id" : "20260604_110509_00116_ka6fd",
+    "STATS_GENERATED_VIA_STATS_TASK" : "workaround for potential lack of HIVE-12730"
+  },
+  "storageFormat" : "PARQUET",
+  "serdeParameters" : { },
+  "externalLocation" : "/data/silver/trips/pickup_year=2023/pickup_month=12",
+  "columnStatistics" : { }
+}

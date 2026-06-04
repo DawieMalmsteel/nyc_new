@@ -1,0 +1,61 @@
+# ── Data (large files, do not commit) ──
+data/raw/
+data/silver/
+data/quarantine/
+data/checkpoints/
+data/gold/
+data/lookup/
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# ── Virtual environments ──
+.venv/
+venv/
+env/
+
+# ── IDE / Editor ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Docker volumes (local state) ──
+docker-compose.override.yml
+
+# ── Spark / Hadoop / Ivy ──
+spark-warehouse/
+metastore_db/
+derby.log
+*.log
+
+# ── Reports (regenerated) ──
+# reports/*.md
+
+# ── dbt (generated) ──
+dbt/nyc_taxi/dbt_packages/
+dbt/nyc_taxi/target/
+dbt/nyc_taxi/logs/
+
+# ── Jupyter ──
+.ipynb_checkpoints/
+
+# ── Secrets / env ──
+.env
+.env.*
+
+# ── Airflow ──
+airflow/logs/
+airflow/dags/__pycache__/
+airflow/plugins/
+airflow/config/
