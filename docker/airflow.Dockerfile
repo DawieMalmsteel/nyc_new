@@ -1,6 +1,8 @@
 # Custom Airflow 2.x image with providers for our pipeline.
 # Pinning versions to avoid pip resolver upgrading airflow 2.x -> 3.x.
 FROM apache/airflow:2.10.5-python3.11
+ENV AIRFLOW__CORE__EXECUTOR=LocalExecutor \
+    AIRFLOW__CORE__LOAD_EXAMPLES=False
 RUN apt-get update || true; \
     apt-get install -y --no-install-recommends curl ca-certificates || true; \
     rm -rf /var/lib/apt/lists/* || true; \

@@ -1,8 +1,8 @@
 # Data Quality Report
 
-Generated at: 2026-06-04T11:04:47.184944+00:00
+Generated at: 2026-06-04T11:39:15.138794+00:00
 
-- Total records processed: **1000**
-- Valid records: **956**
-- Invalid records: **44**
-- Invalid percentage: **4.40%**
+- Total records processed: **0**
+- Valid records: **0**
+- Invalid records: **0**
+- Invalid percentage: **0.00%**
