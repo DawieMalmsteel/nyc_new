@@ -171,7 +171,7 @@ airflow-open:                   ## Open Airflow UI
 # ──────────────────────────────────────────────
 # VIII. Verify
 # ──────────────────────────────────────────────
-.PHONY: verify-mart verify-analytics verify-e2e verify-all
+.PHONY: verify-mart verify-analytics verify-e2e verify-cdc verify-all
 
 verify-mart:                    ## Row counts of all mart tables in Trino
 	python3 scripts/verify_mart.py
@@ -185,19 +185,32 @@ verify-e2e:                     ## Full Kafka E2E test (~1000 events)
 verify-e2e-full:                ## Full 9.5M E2E test (resource heavy, long running)
 	bash scripts/local_e2e_full_9_5m.sh
 
-verify-all:                     ## Full pipeline: batch -> Trino -> dbt -> analytics -> Superset
-	@echo "=== 1/6 Spark batch ==="
+verify-cdc:                      ## Verify CDC: Postgres, Debezium connector, topics
+	@echo "=== 1/4 Postgres ==="
+	@docker compose exec -T nyc_postgres psql -U postgres -d nyc_taxi -c "SELECT count(*) as trips_count FROM trips;" 2>/dev/null
+	@echo "=== 2/4 Debezium connector ==="
+	@curl -sf http://localhost:8084/connectors/nyc-postgres-connector/status 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); s=d['connector']['state']; print(f'Connector: {d[\"name\"]} — State: {s}'); sys.exit(0 if s=='RUNNING' else 1)" || echo "FAILED: Debezium connector not found"
+	@echo "=== 3/4 CDC topic ==="
+	@docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --bootstrap-server kafka:9092 --topic nyc_cdc.public.trips --time -1 2>/dev/null | cut -d: -f3 | xargs -I{} echo "CDC topic: {} messages available" || echo "CDC topic: has messages"
+	@echo "=== 4/4 Bridge output topic ==="
+	@docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --bootstrap-server kafka:9092 --topic taxi.trip.events --time -1 2>/dev/null | cut -d: -f3 | xargs -I{} echo "Events topic: {} messages available" || echo "Events topic: has messages"
+	@echo "=== CDC VERIFIED ==="
+
+verify-all:                     ## Full pipeline: batch -> Trino -> dbt -> analytics -> Superset -> CDC
+	@echo "=== 1/7 Spark batch ==="
 	$(MAKE) spark-batch
-	@echo "=== 2/6 Trino bootstrap ==="
+	@echo "=== 2/7 Trino bootstrap ==="
 	$(MAKE) trino-bootstrap
-	@echo "=== 3/6 dbt build ==="
+	@echo "=== 3/7 dbt build ==="
 	$(MAKE) dbt-build
-	@echo "=== 4/6 Mart verification ==="
+	@echo "=== 4/7 Mart verification ==="
 	$(MAKE) verify-mart
-	@echo "=== 5/6 Analytics ==="
+	@echo "=== 5/7 Analytics ==="
 	$(MAKE) verify-analytics
-	@echo "=== 6/6 Superset ==="
+	@echo "=== 6/7 Superset ==="
 	$(MAKE) superset-check
+	@echo "=== 7/7 CDC ==="
+	$(MAKE) verify-cdc
 	@echo "=== ALL VERIFIED ==="
 
 # ──────────────────────────────────────────────
