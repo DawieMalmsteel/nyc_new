@@ -28,12 +28,13 @@ spark_local_batch    spark_stream_taxi_events   ← Spark Docker
 
 ```bash
 make infra-up           # Core: ZK, Kafka, MinIO, Spark
-make infra-up-all       # Tất cả services
+make infra-up-all       # Tất cả services (cả CDC)
 make spark-batch        # Batch 2.7M rows (~30s)
 make trino-bootstrap    # Register tables
 make dbt-build          # dbt models + tests (PASS 15/15)
 make superset-bootstrap # DB, dataset, 4 charts, dashboard
-make verify-all         # Full 6-step pipeline verify
+make verify-all         # Full 7-step pipeline verify (gồm CDC)
+make cdc-verify         # CDC E2E: seed → register → bridge
 ```
 
 Xem thêm `AGENTS.md` cho danh sách đầy đủ targets và hướng dẫn chi tiết.
@@ -41,18 +42,16 @@ Xem thêm `AGENTS.md` cho danh sách đầy đủ targets và hướng dẫn chi
 ---
 
 ## 3) Trạng thái hiện tại (verified 2026-06-05)
-
-### Hạ tầng Docker Compose (15 services, 6 profiles)
+### Hạ tầng Docker Compose (18 services, 6 profiles)
 
 | Profile | Services |
 |---|---|
 | default | ZK, Kafka, Kafka-UI, MinIO, Spark Master/Worker |
-| tools | topic-init, topic-run, generator, quality-report |
+| tools | topic-init, topic-run, generator, quality-report, **nyc_postgres, debezium, cdc-seed, cdc-register, cdc-bridge** |
 | trino | trino-coordinator, trino-bootstrap |
 | dbt | dbt |
 | superset | superset |
 | airflow | airflow-postgres, airflow-init, airflow-webserver, airflow-scheduler |
-
 File: `docker-compose.yml` — profile-based, volume `./:/opt/project`.
 
 ### Data source
@@ -124,8 +123,7 @@ nyc_new/
 ├── Makefile              ← Entry point chính (30+ targets)
 ├── AGENTS.md             ← Hướng dẫn cho AI assistant
 ├── PLAN.md / README.md / flow.md
-├── docker-compose.yml    ← 15 services, 6 profiles
-├── config/pipeline.yml
+├── docker-compose.yml    ← 18 services, 6 profiles
 ├── .gitignore
 │
 ├── jobs/                 # Spark processors
@@ -203,16 +201,20 @@ Invalid records → quarantine (không drop im lặng).
 | `make verify-mart` | dim_zone=261, fact_trips=2.7M, mart_hourly=3,945 |
 | `make verify-analytics` | PASS 10/10 |
 | `make superset-check` | 1 DB + 1 dataset + 4 charts + 1 dashboard |
-| **`make verify-all`** | **ALL 6/6 PASS** |
-
----
+| `make verify-cdc` | Postgres 5000 rows + Debezium RUNNING + 2 topics OK |
+| **`make verify-all`** | **ALL 7/7 PASS** |
 
 ## 7) Còn lại / Next
 
-- [ ] **Debezium CDC pipeline**: Postgres → Kafka → lake (new source integration)
 - [ ] **Cloud migration**: S3 → local FS, Glue HMS → file-based HMS, marts `materialized='table'`
-- [ ] **Superset auth**: Bật PASSWORD/JWT before cloud
-- [ ] **Full data run**: 9.5M rows end-to-end (requires resources, deferred)
+  - Helm chart cho K8s deployment
+  - S3 thay MinIO (EMRFS / S3A connector)
+  - AWS Glue / Unity Catalog thay file-based Hive Metastore
+  - EMR Serverless / EMR on EKS thay Spark local[*]
+  - Amazon MWAA thay Airflow LocalExecutor
+  - Amazon QuickSight thay Superset (hoặc Superset auth)
+- [ ] **Superset auth**: Bật PASSWORD/JWT authentication (hiện đang WTF_CSRF_ENABLED=False)
+- [ ] **Full data run**: 9.5M rows (3 tháng) end-to-end — requires resources, deferred
 
 ---
 
