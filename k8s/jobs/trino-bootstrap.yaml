@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trino-bootstrap
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trino-bootstrap
+        image: nyc-pipeline-tools:k8s
+        imagePullPolicy: IfNotPresent
+        command:
+        - "entrypoint-trino-bootstrap"
+        env:
+        - name: TRINO_HOST
+          value: svc-trino
+        volumeMounts:
+        - name: project-files
+          mountPath: /opt/project
+      volumes:
+      - name: project-files
+        persistentVolumeClaim:
+          claimName: project-files-pvc
+      resources:
+        requests:
+          cpu: 200m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+  backoffLimit: 3

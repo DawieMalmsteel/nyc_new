@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-cdc
+spec:
+  replicas: 1
+  serviceName: svc-postgres-cdc
+  selector:
+    matchLabels:
+      app: postgres-cdc
+  template:
+    metadata:
+      labels:
+        app: postgres-cdc
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              value: postgres
+            - name: POSTGRES_DB
+              value: nyc_taxi
+          args:
+            - postgres
+            - -c
+            - wal_level=logical
+            - -c
+            - max_replication_slots=4
+            - -c
+            - max_wal_senders=4
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+                - -d
+                - nyc_taxi
+            initialDelaySeconds: 30
+          volumeMounts:
+            - name: postgres-cdc-data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-cdc-data
+          persistentVolumeClaim:
+            claimName: postgres-cdc-data

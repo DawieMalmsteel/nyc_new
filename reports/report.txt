@@ -1,0 +1,144 @@
+BÁO CÁO DỰ ÁN — NYC TAXI DATA PIPELINE
+
+================================================================================
+
+1. TÊN PROJECT
+
+Hệ thống xử lý dữ liệu taxi New York — Xây dựng pipeline xử lý dữ liệu từ đầu vào cho tới báo cáo trực quan, thiết kế để chạy trên Kubernetes (K8s) và triển khai lên AWS. Phiên bản hiện tại là MVP chạy trên Docker, làm nền tảng cho cloud migration.
+
+================================================================================
+
+2. SẢN PHẨM BÀN GIAO
+
+- Hạ tầng container: Toàn bộ hệ thống đóng gói trong container, sẵn sàng chạy trên K8s
+- Xử lý dữ liệu batch: Đọc file gốc, làm sạch, kiểm tra chất lượng, lưu kho sạch
+- Xử lý dữ liệu streaming: Nhận dữ liệu từ Kafka real-time, xử lý tương tự batch
+- Tầng tra cứu (Trino): Truy vấn SQL trực tiếp trên kho dữ liệu Parquet
+- Mô hình hóa dữ liệu (dbt): 6 bảng có cấu trúc, sẵn sàng cho phân tích
+- Dashboard trực quan (Superset): 4 biểu đồ, 1 dashboard tổng quan
+- Điều phối luồng (Airflow): Tự động hóa toàn bộ pipeline
+- Tiếp nhận CDC: Theo dõi thay đổi từ database vào pipeline real-time
+- Bộ công cụ vận hành (Makefile): 1 câu lệnh cho mọi thao tác
+- Bộ kiểm tra tự động: Đảm bảo pipeline luôn chạy đúng
+
+================================================================================
+
+3. TIÊU CHÍ HOÀN THÀNH
+
+- Pipeline đóng gói container — không cài Python/Java trên máy thật: OK
+- Xử lý 2.7 triệu chuyến xe / tháng trong dưới 5 phút: OK
+- Dữ liệu sạch có thể truy vấn bằng SQL: OK
+- 15/15 bước kiểm tra dữ liệu tự động đạt: OK
+- 10/10 câu hỏi phân tích trả lời đúng: OK
+- Dashboard có 4 biểu đồ, hiển thị dữ liệu thật: OK
+- Airflow tự động chạy toàn bộ pipeline: OK
+- CDC: 500 dòng thay đổi đồng bộ trong 8.5 giây: OK
+- Cơ sở triển khai lên K8s và AWS (image sẵn, cấu hình tập trung): OK
+- Có tài liệu hướng dẫn AI assistant: OK
+
+================================================================================
+
+4. CÔNG VIỆC THEO TUẦN
+
+TUẦN 1 — THIẾT LẬP HẠ TẦNG VÀ THU THẬP DỮ LIỆU
+
+Công việc:
+- Thiết lập Docker Compose: Dựng hạ tầng cốt lõi — Kafka (hàng đợi tin nhắn), MinIO (kho lưu trữ), Spark Master/Worker (xử lý dữ liệu), Kafka UI
+- Tải dữ liệu gốc: Tải 3 tháng dữ liệu taxi vàng từ Cục Taxi New York (~9.5 triệu chuyến), kèm danh sách mã vùng tra cứu
+- Phát dữ liệu thử: Xây dựng công cụ phát dữ liệu từ file gốc vào Kafka
+- Kiểm tra kết nối: Đảm bảo dữ liệu đi từ Kafka đến Spark và lưu file thành công
+
+KẾT QUẢ: Hạ tầng core hoạt động ổn định, dữ liệu thô sẵn sàng cho xử lý.
+
+TUẦN 2 — XÂY DỰNG BỘ XỬ LÝ DỮ LIỆU
+
+Công việc:
+- Xử lý batch (local Spark): Đọc file gốc, tự động thêm thông tin vùng đón/trả, kiểm tra chất lượng, ghi kho sạch Parquet
+- Xử lý streaming (Kafka): Nhận dữ liệu từ Kafka, xử lý giống batch nhưng chạy real-time
+- Bộ quy tắc kiểm tra: 8 quy tắc — dữ liệu thiếu, quãng đường <= 0, tiền âm, số khách ngoài 1-6, mã vùng không tồn tại
+- Phân luồng dữ liệu: Hợp lệ vào kho sạch, lỗi vào kho riêng (ghi rõ lỗi để debug)
+
+KẾT QUẢ: Dữ liệu tự động làm sạch và phân loại. ~240k chuyến lỗi được tách riêng trong 2.7 triệu chuyến.
+
+TUẦN 3 — XÂY DỰNG TẦNG TRUY VẤN DỮ LIỆU
+
+Công việc:
+- Cài đặt Trino: Cỗ máy truy vấn SQL trên kho Parquet — thay thế database truyền thống
+- Cấu hình Hive Metastore: Kho lưu thông tin bảng, schema — Trino đọc Parquet như bảng SQL
+- Đăng ký bảng: 2 bảng — trips (chuyến hợp lệ) và invalid_trips (chuyến lỗi)
+- Đồng bộ partition: Tự động cập nhật khi có dữ liệu mới
+
+KẾT QUẢ: Truy vấn được 2.7 triệu chuyến xe bằng SQL trực tiếp.
+
+TUẦN 4 — XÂY DỰNG MÔ HÌNH DỮ LIỆU PHÂN TÍCH
+
+Công việc:
+- Cài đặt dbt-trino: Công cụ biến đổi dữ liệu, kết nối Trino — dễ chuyển sang Athena khi lên AWS
+- Bảng staging: 2 bảng trung gian — chuẩn hóa kiểu dữ liệu (text sang số, ngày tháng)
+- Bảng phân tích (marts): 4 bảng — danh mục vùng (261 vùng), giao dịch (2.7M chuyến kèm tỉ lệ tip, thời gian chuyến), bảng lỗi, tổng hợp theo giờ
+- Kiểm tra tự động: 9 bài kiểm tra — không null, giá trị hợp lệ, khoảng thanh toán đúng
+- Xử lý tương thích: Bảng để chế độ view (phù hợp file-based, dễ migrate lên AWS Glue)
+
+KẾT QUẢ: 15/15 bước kiểm tra đạt. Dữ liệu sẵn sàng cho dashboard.
+
+TUẦN 5 — DASHBOARD VÀ TỰ ĐỘNG HÓA
+
+Công việc:
+- Cài đặt Superset: Dashboard trực quan kết nối Trino — có thể thay bằng QuickSight khi lên AWS
+- Dashboard NYC Taxi Overview: 4 biểu đồ — chuyến theo giờ, loại thanh toán, top khu vực đón, xu hướng theo ngày
+- Cài đặt Airflow: Điều phối pipeline — tương thích Amazon MWAA (Managed Workflows)
+- Viết luồng tự động: 2 DAG — pipeline đầy đủ (Spark đến Trino đến dbt đến Superset) và pipeline analytics
+- Xây dựng Makefile: 40+ lệnh — 1 câu lệnh duy nhất chạy toàn bộ pipeline
+- Kiểm tra toàn bộ: make verify-all PASS 6/6 bước
+
+KẾT QUẢ: Dashboard hoạt động với dữ liệu thật. Pipeline chạy 1 lệnh. 100% container hóa, sẵn sàng đóng gói K8s.
+
+TUẦN 6 — TIẾP NHẬN CDC VÀ HOÀN THIỆN
+
+Công việc:
+- Cài đặt Postgres + WAL: Database có cơ chế ghi nhận thay đổi — mô phỏng nguồn real-time từ production DB
+- Cài đặt Debezium: CDC theo dõi thay đổi Postgres, đẩy vào Kafka — deploy được trên K8s với Strimzi
+- Seed dữ liệu: Nạp 5000 chuyến xe mẫu từ file Parquet vào Postgres
+- Cầu nối CDC đến pipeline: Chuyển đổi dữ liệu thay đổi thành định dạng chuẩn, đưa vào luồng streaming
+- Kiểm tra CDC: 500 dòng đồng bộ trong 8.5 giây
+- Viết tài liệu: AGENTS.md (hướng dẫn AI assistant), flow.md (sơ đồ kiến trúc), report (báo cáo)
+- Dọn dẹp repository: Xóa file tạm, chuẩn hóa .gitignore, Conventional Commits
+
+KẾT QUẢ: Pipeline nhận dữ liệu thay đổi từ database real-time. Repository sạch, có tài liệu, sẵn sàng cloud migration.
+
+================================================================================
+
+5. TỔNG KẾT
+
+HẠ TẦNG HIỆN TẠI (MVP TRÊN DOCKER)
+
+- Số container: 18
+- Công nghệ cốt lõi: Kafka, Spark, Trino, dbt, Superset, Airflow, Debezium, Postgres, MinIO
+- Hình thức triển khai: Docker Compose — 6 profiles
+- Entry point: Makefile (40+ lệnh)
+
+CLOUD MIGRATION ROADMAP
+
+- Docker Compose -> Helm chart / EKS
+- MinIO -> S3
+- Hive Metastore (file) -> AWS Glue / Unity Catalog
+- Spark local[*] / master -> EMR on EKS / EMR Serverless
+- Trino -> EMR Trino / Athena
+- Superset -> Amazon QuickSight
+- Airflow (LocalExecutor) -> Amazon MWAA
+- dbt run docker -> dbt-core trên EKS / dbt Cloud
+- Debezium docker -> Strimzi (Kafka operator trên K8s)
+
+DỮ LIỆU
+
+- Dữ liệu batch: 2,724,037 chuyến hợp lệ / 240,587 chuyến lỗi
+- CDC: 500 dòng đồng bộ trong 8.5 giây
+- Kiểm tra dbt: 15/15 đạt
+- Câu hỏi phân tích: 10/10 đúng
+
+MỤC TIÊU DÀI HẠN
+
+- Container đến K8s: Chuyển Docker Compose sang Helm chart, Strimzi cho Kafka, Airflow K8sExecutor
+- Local đến AWS: S3 thay MinIO, AWS Glue thay Hive Metastore, EMR Serverless thay Spark, QuickSight thay Superset
+- MVP đến Full-scale: Pipeline 9.5 triệu chuyến (3 tháng), thêm monitoring Prometheus/Grafana
+- Bảo mật: Xác thực tất cả services, Secrets Manager / KMS cho credential

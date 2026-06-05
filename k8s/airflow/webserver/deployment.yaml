@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-webserver
+  labels:
+    app: airflow-webserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-webserver
+  template:
+    metadata:
+      labels:
+        app: airflow-webserver
+    spec:
+      containers:
+      - name: webserver
+        image: nyc-airflow:k8s
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "/docker/entrypoint-airflow.sh"]
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: AIRFLOW_ROLE
+          value: webserver
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          value: postgresql+psycopg2://airflow:airflow@svc-airflow-postgres:5432/airflow
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "False"
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: LocalExecutor
+        - name: AIRFLOW_UID
+          value: "0"
+        volumeMounts:
+        - name: entrypoint
+          mountPath: /docker/entrypoint-airflow.sh
+          subPath: entrypoint-airflow.sh
+        resources:
+          requests:
+            cpu: 300m
+            memory: 512Mi
+          limits:
+            cpu: 1
+            memory: 1Gi
+      volumes:
+      - name: entrypoint
+        configMap:
+          name: airflow-entrypoint
+          defaultMode: 0755

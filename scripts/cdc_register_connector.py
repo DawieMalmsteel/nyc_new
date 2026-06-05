@@ -60,7 +60,10 @@ def _req(url, method="GET", data=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debezium-url", default="http://debezium:8083")
+    parser.add_argument("--postgres-host", default="nyc_postgres", help="Postgres hostname for connector config")
     args = parser.parse_args()
+    # Override postgres hostname in config
+    CONNECTOR_CONFIG["config"]["database.hostname"] = args.postgres_host
     base = args.debezium_url.rstrip("/")
 
     # Wait for Debezium to be ready
@@ -91,10 +94,19 @@ def main():
     result = _req(f"{base}/connectors/", method="POST", data=CONNECTOR_CONFIG)
     print(f"[cdc] connector registered: {result['name']} (status: {result.get('state', '?')})")
 
-    # Verify
-    status = _req(f"{base}/connectors/{CONNECTOR_NAME}/status")
-    print(f"[cdc] connector status: {status}")
-    return 0
+    # Verify with retry (connector may take a moment to start)
+    for attempt in range(10):
+        try:
+            status = _req(f"{base}/connectors/{CONNECTOR_NAME}/status")
+            print(f"[cdc] connector status: {status}")
+            return 0
+        except Exception:
+            if attempt < 9:
+                print(f"[cdc] waiting for connector to start (attempt {attempt+1})...")
+                time.sleep(2)
+            else:
+                print(f"[cdc] connector status check failed after 10 retries")
+                return 1
 
 
 if __name__ == "__main__":

@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  labels:
+    app: airflow-scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-scheduler
+  template:
+    metadata:
+      labels:
+        app: airflow-scheduler
+    spec:
+      containers:
+      - name: scheduler
+        image: nyc-airflow:k8s
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "/docker/entrypoint-airflow.sh"]
+        env:
+        - name: AIRFLOW_ROLE
+          value: scheduler
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          value: postgresql+psycopg2://airflow:airflow@svc-airflow-postgres:5432/airflow
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "False"
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: LocalExecutor
+        - name: AIRFLOW_UID
+          value: "0"
+        - name: AIRFLOW_GID
+          value: "0"
+        volumeMounts:
+        - name: entrypoint
+          mountPath: /docker/entrypoint-airflow.sh
+          subPath: entrypoint-airflow.sh
+        resources:
+          requests:
+            cpu: 300m
+            memory: 512Mi
+          limits:
+            cpu: 1
+            memory: 1Gi
+      volumes:
+      - name: entrypoint
+        configMap:
+          name: airflow-entrypoint
+          defaultMode: 0755

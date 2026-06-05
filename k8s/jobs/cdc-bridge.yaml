@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cdc-bridge
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: cdc-bridge
+        image: nyc-pipeline-tools:k8s
+        imagePullPolicy: IfNotPresent
+        command:
+        - "entrypoint-cdc-bridge"
+        - "--bootstrap-server"
+        - "svc-kafka:9092"
+        - "--max-events"
+        - "500"
+        volumeMounts:
+        - name: project-files
+          mountPath: /opt/project
+      volumes:
+      - name: project-files
+        persistentVolumeClaim:
+          claimName: project-files-pvc
+      resources:
+        requests:
+          cpu: 200m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+  backoffLimit: 3

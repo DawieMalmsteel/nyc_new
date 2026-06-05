@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: debezium
+  name: debezium
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: debezium
+  template:
+    metadata:
+      labels:
+        app: debezium
+    spec:
+      containers:
+      - env:
+        - name: BOOTSTRAP_SERVERS
+          value: svc-kafka:9092
+        - name: GROUP_ID
+          value: "1"
+        - name: CONFIG_STORAGE_TOPIC
+          value: debezium_configs
+        - name: OFFSET_STORAGE_TOPIC
+          value: debezium_offsets
+        - name: STATUS_STORAGE_TOPIC
+          value: debezium_statuses
+        image: debezium/connect:2.5
+        imagePullPolicy: IfNotPresent
+        name: debezium
+        ports:
+        - containerPort: 8083
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 300m
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 2Gi

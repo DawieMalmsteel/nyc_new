@@ -1,0 +1,144 @@
+PROJECT REPORT — NYC TAXI DATA PIPELINE
+
+================================================================================
+
+1. PROJECT NAME
+
+NYC Taxi Data Pipeline — Build a data processing pipeline from raw input to visual dashboard, designed to run on Kubernetes (K8s) and deploy to AWS. Current version is a Docker-based MVP serving as the foundation for cloud migration.
+
+================================================================================
+
+2. DELIVERABLES
+
+- Container infrastructure: Entire system packaged in containers, ready for K8s
+- Batch data processing: Read raw files, clean, validate, store to clean data lake
+- Streaming data processing: Consume Kafka messages in real-time, same logic as batch
+- Query engine (Trino): SQL queries directly on Parquet data lake
+- Data modeling (dbt): 6 structured tables ready for analytics
+- Visual dashboard (Superset): 4 charts, 1 overview dashboard
+- Workflow orchestration (Airflow): Full pipeline automation
+- CDC ingestion: Track database changes into the real-time pipeline
+- Operations toolkit (Makefile): Single command for every operation
+- Automated test suite: Ensure pipeline correctness
+
+================================================================================
+
+3. COMPLETION CRITERIA
+
+- Entire pipeline runs in containers — no Python/Java on host machine
+- Process 2.7 million trips / month in under 5 minutes
+- Clean data queryable via SQL
+- 15/15 automated data quality checks pass
+- 10/10 analytics questions answered correctly
+- Dashboard with 4 charts showing real data
+- Airflow automates the full pipeline
+- CDC: 500 change events synced in 8.5 seconds
+- Foundation for K8s and AWS deployment (containerized, centralized config)
+- AI assistant guide documentation
+
+================================================================================
+
+4. WEEKLY WORK LOG
+
+WEEK 1 — INFRASTRUCTURE SETUP & DATA INGESTION
+
+Tasks:
+- Docker Compose setup: Core infrastructure — Kafka (message queue), MinIO (storage), Spark Master/Worker (computation), Kafka UI
+- Raw data download: Downloaded 3 months of Yellow Taxi data from NYC TLC (~9.5 million trips) plus zone lookup table
+- Data generator: Built tool to replay parquet data into Kafka topics
+- Connectivity test: Verified end-to-end flow from Kafka to Spark to parquet output
+
+RESULT: Core infrastructure stable. Raw data ready for processing.
+
+WEEK 2 — DATA PROCESSOR DEVELOPMENT
+
+Tasks:
+- Batch processor (local Spark): Read raw parquet, enrich with zone info, validate quality, write clean Parquet
+- Streaming processor (Kafka): Same logic as batch but consuming from Kafka in real-time
+- Validation rules: 8 rules — missing data, trip distance <= 0, negative fare, passenger count out of 1-6, invalid zone codes
+- Data routing: Valid records to clean lake, invalid records to quarantine with error details
+
+RESULT: Data automatically cleaned and classified. ~240k invalid trips separated from 2.7 million total.
+
+WEEK 3 — QUERY ENGINE SETUP
+
+Tasks:
+- Trino deployment: SQL query engine on Parquet files — replaces traditional database
+- Hive Metastore configuration: Table schema registry allowing Trino to read Parquet as SQL tables
+- Table registration: 2 tables — trips (valid) and invalid_trips (quarantined)
+- Partition sync: Auto-update when new data arrives
+
+RESULT: 2.7 million trips queryable via direct SQL.
+
+WEEK 4 — ANALYTICS DATA MODELING
+
+Tasks:
+- dbt-trino setup: Data transformation tool connected to Trino — easily switchable to Athena on AWS
+- Staging tables: 2 intermediate tables — data type normalization, consistent column naming
+- Mart tables: 4 tables — zone dimension (261 zones), trip facts (2.7M with computed tip rate, trip duration), invalid trips, hourly summary
+- Automated testing: 9 tests — not-null checks, valid values, payment type range
+- Compatibility fix: All tables set to view mode (compatible with file-based metastore, easy to migrate to AWS Glue)
+
+RESULT: 15/15 checks pass. Data ready for dashboarding.
+
+WEEK 5 — DASHBOARD & AUTOMATION
+
+Tasks:
+- Superset setup: Visual dashboard connected to Trino — replaceable with QuickSight on AWS
+- NYC Taxi Overview dashboard: 4 charts — trips by hour, payment type distribution, top pickup zones, daily trend
+- Airflow setup: Pipeline orchestration — compatible with Amazon MWAA (Managed Workflows)
+- DAG development: 2 pipelines — full pipeline (Spark to Trino to dbt to Superset) and analytics refresh
+- Makefile: 40+ commands — single entry point for all operations
+- Full integration test: make verify-all PASS 6/6 steps
+
+RESULT: Dashboard live with real data. One-command pipeline. Fully containerized, K8s-ready.
+
+WEEK 6 — CDC PIPELINE & FINALIZATION
+
+Tasks:
+- Postgres + WAL setup: Database with change tracking enabled — simulating production real-time source
+- Debezium setup: CDC tool tracking Postgres changes into Kafka — deployable on K8s via Strimzi
+- Data seeding: Loaded 5000 sample trips from Parquet into Postgres
+- CDC bridge: Transform change events into standard format, feed into streaming pipeline
+- CDC verification: 500 events synced in 8.5 seconds
+- Documentation: AGENTS.md (AI assistant guide), flow.md (architecture diagram), report (this document)
+- Repository cleanup: Remove temp files, standardize .gitignore, Conventional Commits
+
+RESULT: Pipeline ingests real-time database changes. Clean repository with full documentation, ready for cloud migration.
+
+================================================================================
+
+5. SUMMARY
+
+CURRENT INFRASTRUCTURE (DOCKER MVP)
+
+- Containers: 18
+- Core technologies: Kafka, Spark, Trino, dbt, Superset, Airflow, Debezium, Postgres, MinIO
+- Deployment: Docker Compose — 6 profiles
+- Entry point: Makefile (40+ commands)
+
+CLOUD MIGRATION ROADMAP
+
+- Docker Compose -> Helm chart / EKS
+- MinIO -> S3
+- Hive Metastore (file-based) -> AWS Glue / Unity Catalog
+- Spark local[*] / master -> EMR on EKS / EMR Serverless
+- Trino -> EMR Trino / Athena
+- Superset -> Amazon QuickSight
+- Airflow (LocalExecutor) -> Amazon MWAA
+- dbt run docker -> dbt-core on EKS / dbt Cloud
+- Debezium docker -> Strimzi (Kafka operator on K8s)
+
+DATA VOLUME
+
+- Batch data: 2,724,037 valid trips / 240,587 invalid trips
+- CDC: 500 events synced in 8.5 seconds
+- dbt checks: 15/15 pass
+- Analytics queries: 10/10 correct
+
+LONG-TERM GOALS
+
+- Container to K8s: Migrate Docker Compose to Helm charts, deploy Kafka with Strimzi, Airflow K8sExecutor
+- Local to AWS: Replace MinIO with S3, Hive Metastore with AWS Glue, Spark with EMR Serverless, Superset with QuickSight
+- MVP to Full-scale: Run pipeline on all 9.5 million trips (3 months), add monitoring (Prometheus/Grafana)
+- Security: Enable authentication for all services, use Secrets Manager / KMS for credentials

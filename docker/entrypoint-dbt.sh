@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Run dbt build (deps, seed, run, test).
 set -euo pipefail
-
+TRINO_HOST="${TRINO_HOST:-trino-coordinator}"
+TRINO_PORT="${TRINO_PORT:-8080}"
 # Wait for Trino.
 for i in {1..60}; do
-  if curl -sf http://trino-coordinator:8080/v1/info >/dev/null 2>&1; then
+  if curl -sf "http://${TRINO_HOST}:${TRINO_PORT}/v1/info" >/dev/null 2>&1; then
     break
   fi
   sleep 2
