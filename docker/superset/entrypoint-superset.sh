@@ -12,6 +12,8 @@ for i in {1..60}; do
 done
 
 export PYTHONPATH=/app/docker
+echo "[superset] installing sqlalchemy-trino"
+pip install sqlalchemy-trino -q
 
 echo "[superset] upgrading DB"
 superset db upgrade

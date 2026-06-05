@@ -1,10 +1,11 @@
-# ── Data (large files, do not commit) ──
+# ── Data (large / generated files, do not commit) ──
 data/raw/
 data/silver/
 data/quarantine/
 data/checkpoints/
 data/gold/
 data/lookup/
+data/trino-metastore/
 
 # ── Python ──
 __pycache__/
@@ -40,12 +41,11 @@ derby.log
 *.log
 
 # ── Reports (regenerated) ──
-# reports/*.md
+reports/*.md
 
 # ── dbt (generated) ──
-dbt/nyc_taxi/dbt_packages/
-dbt/nyc_taxi/target/
-dbt/nyc_taxi/logs/
+dbt/target/
+dbt/logs/
 
 # ── Jupyter ──
 .ipynb_checkpoints/

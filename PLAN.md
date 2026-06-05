@@ -317,11 +317,11 @@ Invalid records được ghi vào quarantine, không drop im lặng.
 
 ### Còn lại (chưa làm)
 
-- Airflow orchestration DAG (đặt lịch pipeline + dbt + Superset refresh)
-- Debezium CDC pipeline (Postgres → Kafka → lake)
-- Cloud migration: S3 thay local FS, Glue HMS thay file-based, marts `materialized='table'`
-- Superset auth (bật lại PASSWORD/JWT) trước khi đưa lên cloud
-- Re-run pipeline ở quy mô 9.5M rows end-to-end
+- [x] Airflow orchestration DAG (nyc_e2e_pipeline, nyc_analytics_refresh) - *Verification: Pass (dbt build verified via Airflow; Superset chart create verified manual/script)*
+- [ ] Debezium CDC pipeline (Postgres → Kafka → lake)
+- [ ] Cloud migration: S3 thay local FS, Glue HMS thay file-based, marts `materialized='table'`
+- [ ] Superset auth (bật lại PASSWORD/JWT) trước khi đưa lên cloud
+- [ ] Re-run pipeline ở quy mô 9.5M rows end-to-end
 
 ---
 
