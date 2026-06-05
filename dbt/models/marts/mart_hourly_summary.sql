@@ -1,5 +1,5 @@
 -- Mart: hourly trip summary.
-{{ config(materialized='table') }}
+{{ config(materialized='view') }}
 
 select
   pickup_date,

@@ -1,5 +1,5 @@
 -- Mart: zone dimension (pickup + dropoff union of distinct zones seen in trips).
-{{ config(materialized='table') }}
+{{ config(materialized='view') }}
 
 with zones as (
   select pickup_zone as zone, pickup_borough as borough, pickup_service_zone as service_zone from {{ ref('stg_trips') }}

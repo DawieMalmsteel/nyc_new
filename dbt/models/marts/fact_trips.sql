@@ -1,5 +1,5 @@
 -- Mart: fact_trips with derived duration and tip rate.
-{{ config(materialized='table') }}
+{{ config(materialized='view') }}
 
 select
   pickup_ts,
