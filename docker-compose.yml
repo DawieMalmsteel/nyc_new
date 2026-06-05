@@ -129,6 +129,98 @@ services:
     command: ["entrypoint-quality"]
     restart: "no"
 
+
+  nyc_postgres:
+    image: postgres:16-alpine
+    container_name: nyc_postgres
+    profiles: ["tools"]
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nyc_taxi
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=4"
+      - "-c"
+      - "max_wal_senders=4"
+    volumes:
+      - postgres_cdc_data:/var/lib/postgresql/data
+      - ./docker/entrypoint-init-postgres.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nyc_taxi"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+  debezium:
+    image: debezium/connect:2.5
+    container_name: nyc_debezium
+    profiles: ["tools"]
+    depends_on:
+      - kafka
+      - nyc_postgres
+    ports:
+      - "8084:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: debezium_configs
+      OFFSET_STORAGE_TOPIC: debezium_offsets
+      STATUS_STORAGE_TOPIC: debezium_statuses
+    restart: unless-stopped
+
+  cdc-seed:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: nyc-pipeline-tools:latest
+    container_name: nyc_cdc_seed
+    profiles: ["tools"]
+    depends_on:
+      nyc_postgres:
+        condition: service_healthy
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project
+    command: ["entrypoint-cdc-seed",
+      "--input", "/opt/project/data/raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet",
+      "--max-rows", "5000"]
+    restart: "no"
+
+  cdc-register:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: nyc-pipeline-tools:latest
+    container_name: nyc_cdc_register
+    profiles: ["tools"]
+    depends_on:
+      - debezium
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project
+    command: ["entrypoint-cdc-register"]
+    restart: "no"
+
+  cdc-bridge:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: nyc-pipeline-tools:latest
+    container_name: nyc_cdc_bridge
+    profiles: ["tools"]
+    depends_on:
+      - debezium
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project
+    entrypoint: ["entrypoint-cdc-bridge"]
+    restart: "no"
+
   trino-coordinator:
     image: trinodb/trino:435
     container_name: nyc_trino
@@ -286,3 +378,4 @@ services:
 volumes:
   minio_data:
   airflow_postgres_data:
+  postgres_cdc_data:

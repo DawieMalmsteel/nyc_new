@@ -104,7 +104,17 @@ File: `docker-compose.yml` — profile-based, volume `./:/opt/project`.
 - Postgres metadata, LocalExecutor, Docker-in-Docker
 - 2 DAGs: `nyc_analytics_refresh` (dbt → Superset → analytics), `nyc_e2e_pipeline` (full)
 - PythonOperator gọi `subprocess.run(["docker", ...])` với absolute host paths
+### Debezium CDC (Postgres → Kafka → events)
 
+- Postgres 16 (`nyc_postgres`) với WAL logical replication, `wal_level=logical`
+- Debezium Kafka Connect 2.5 (`nyc_debezium`) — Postgres connector, `ExtractNewRecordState` transform
+- `scripts/cdc_seed.py` — seed Postgres từ parquet (5000 rows mặc định)
+- `scripts/cdc_register_connector.py` — đăng ký connector qua REST API
+- `scripts/cdc_bridge.py` — CDC topic → `taxi.trip.events` (định dạng tương thích Spark)
+- Unwrap transform loại bỏ `before/after/op` envelope, bridge convert microsecond timestamps → string
+- Makefile targets: `cdc-up`, `cdc-seed`, `cdc-register`, `cdc-bridge`, `cdc-verify`
+- Verified: 500 CDC events → `taxi.trip.events` topic (8.5s)
+├── docker-compose.yml    ← 18 services, 6 profiles
 ---
 
 ## 4) Cấu trúc project

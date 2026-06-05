@@ -61,6 +61,36 @@ kafka-publish-full:             ## Publish ALL 9.5M events (takes hours)
 	MAX_EVENTS=-1 INVALID_RATE=0.01 $(MAKE) kafka-publish
 
 # ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# CDC. Debezium (Postgres → Kafka → events)
+# ──────────────────────────────────────────────
+.PHONY: cdc-up cdc-seed cdc-register cdc-bridge cdc-verify
+
+cdc-up:                         ## Start Postgres + Debezium
+	docker compose --profile tools up -d nyc_postgres debezium
+
+cdc-seed:                        ## Seed Postgres trips table from parquet (5000 rows)
+	docker compose --profile tools run --rm cdc-seed
+
+cdc-seed-full:                   ## Seed Postgres with 50K rows
+	docker compose --profile tools run --rm cdc-seed --max-rows 50000
+
+cdc-register:                    ## Register Debezium Postgres connector
+	docker compose --profile tools run --rm cdc-register
+
+cdc-bridge:                      ## Run CDC bridge: Debezium topic → taxi.trip.events
+	docker compose --profile tools run --rm cdc-bridge
+
+cdc-verify:                      ## CDC E2E: seed → register → bridge → verify
+	$(MAKE) cdc-seed
+	@echo "=== 2/4 Register connector ==="
+	$(MAKE) cdc-register
+	@echo "=== 3/4 Bridge (500 events) ==="
+	docker compose --profile tools run --rm cdc-bridge --max-events 500
+	@echo "=== 4/4 Verify via Spark batch (optional, run make verify-all after) ==="
+
+# ──────────────────────────────────────────────
 # III. Spark
 spark-batch:                    ## Batch backfill from parquet (fast, no Kafka needed)
 	docker run --rm \
