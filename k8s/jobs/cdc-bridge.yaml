@@ -3,6 +3,7 @@ kind: Job
 metadata:
   name: cdc-bridge
 spec:
+  ttlSecondsAfterFinished: 300
   template:
     spec:
       restartPolicy: Never
@@ -11,7 +12,9 @@ spec:
         image: nyc-pipeline-tools:k8s
         imagePullPolicy: IfNotPresent
         command:
-        - "entrypoint-cdc-bridge"
+        - python3
+        - /opt/project/scripts/cdc_bridge.py
+        args:
         - "--bootstrap-server"
         - "svc-kafka:9092"
         - "--max-events"

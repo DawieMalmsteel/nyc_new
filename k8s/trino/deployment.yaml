@@ -14,6 +14,8 @@ spec:
       labels:
         app: trino
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker
       containers:
       - image: trinodb/trino:435
         imagePullPolicy: IfNotPresent
@@ -46,7 +48,12 @@ spec:
           subPath: hive.properties
         - mountPath: /data
           name: trino-data
+        - mountPath: /opt/project/data
+          name: raw-data
       volumes:
+      - name: raw-data
+        persistentVolumeClaim:
+          claimName: raw-data-pvc
       - configMap:
           name: trino-config
           items:

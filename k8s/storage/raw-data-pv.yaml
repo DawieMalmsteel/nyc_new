@@ -6,7 +6,7 @@ spec:
   capacity:
     storage: 50Gi
   accessModes:
-  - ReadOnlyMany
+  - ReadWriteOnce
   hostPath:
     path: /mnt/nyc-data
     type: Directory
@@ -25,7 +25,7 @@ metadata:
   name: raw-data-pvc
 spec:
   accessModes:
-  - ReadOnlyMany
+  - ReadWriteOnce
   resources:
     requests:
       storage: 50Gi

@@ -12,7 +12,6 @@ spec:
         imagePullPolicy: IfNotPresent
         command:
         - "entrypoint-dbt"
-        - "build"
         env:
         - name: DBT_PROFILES_DIR
           value: /opt/project/dbt

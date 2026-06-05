@@ -3,9 +3,12 @@ kind: Job
 metadata:
   name: trino-bootstrap
 spec:
+  ttlSecondsAfterFinished: 300
   template:
     spec:
       restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker
       containers:
       - name: trino-bootstrap
         image: nyc-pipeline-tools:k8s
@@ -15,13 +18,24 @@ spec:
         env:
         - name: TRINO_HOST
           value: svc-trino
+        - name: TRINO_PORT
+          value: "8080"
+        - name: SILVER_PATH
+          value: /opt/project/data/silver/trips
+        - name: QUARANTINE_PATH
+          value: /opt/project/data/quarantine/invalid_trips
         volumeMounts:
         - name: project-files
           mountPath: /opt/project
+        - name: raw-data
+          mountPath: /opt/project/data
       volumes:
       - name: project-files
         persistentVolumeClaim:
           claimName: project-files-pvc
+      - name: raw-data
+        persistentVolumeClaim:
+          claimName: raw-data-pvc
       resources:
         requests:
           cpu: 200m
