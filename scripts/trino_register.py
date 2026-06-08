@@ -20,16 +20,9 @@ QUARANTINE_PATH = os.environ.get("QUARANTINE_PATH", "/opt/project/data/quarantin
 ZONES_PATH = os.environ.get("ZONES_PATH", "/opt/project/data/lookup/")
 SCHEMA = "hive.nyc"
 
-S3_MODE = os.environ.get("S3_MODE", "").lower() in ("1", "true", "yes")
-S3_BUCKET_SILVER = os.environ.get("S3_BUCKET_SILVER", "nyc-silver")
-S3_BUCKET_QUARANTINE = os.environ.get("S3_BUCKET_QUARANTINE", "nyc-quarantine")
-S3_BUCKET_LOOKUP = os.environ.get("S3_BUCKET_LOOKUP", "nyc-lookup")
-
-# When S3_MODE is active, override paths to S3 (Trino uses s3:// protocol)
-if S3_MODE:
-    SILVER_PATH = f"s3://{S3_BUCKET_SILVER}/trips"
-    QUARANTINE_PATH = f"s3://{S3_BUCKET_QUARANTINE}/invalid_trips"
-    ZONES_PATH = f"s3://{S3_BUCKET_LOOKUP}/"
+SILVER_PATH = os.environ.get("SILVER_PATH", "s3://nyc-silver/trips")
+QUARANTINE_PATH = os.environ.get("QUARANTINE_PATH", "s3://nyc-quarantine/invalid_trips")
+ZONES_PATH = os.environ.get("ZONES_PATH", "s3://nyc-lookup/")
 
 TRIPS_COLS = [
     "trip_id BIGINT",

@@ -53,19 +53,17 @@ EVENT_SCHEMA = StructType(
 )
 
 
-def build_spark(s3_mode: bool = False) -> SparkSession:
-    builder = SparkSession.builder.appName("nyc-taxi-kafka-stream") \
-        .config("spark.sql.shuffle.partitions", "4")
-    if s3_mode:
-        endpoint = os.environ.get("MINIO_ENDPOINT", "http://minio:9000")
-        access_key = os.environ.get("MINIO_ACCESS_KEY", "minio")
-        secret_key = os.environ.get("MINIO_SECRET_KEY", "minio123")
-        builder = builder \
-            .config("spark.hadoop.fs.s3a.endpoint", endpoint) \
-            .config("spark.hadoop.fs.s3a.access.key", access_key) \
-            .config("spark.hadoop.fs.s3a.secret.key", secret_key) \
-            .config("spark.hadoop.fs.s3a.path.style.access", "true")
-    spark = builder.getOrCreate()
+def build_spark() -> SparkSession:
+    endpoint = os.environ.get("MINIO_ENDPOINT", "http://minio:9000")
+    access_key = os.environ.get("MINIO_ACCESS_KEY", "minio")
+    secret_key = os.environ.get("MINIO_SECRET_KEY", "minio123")
+    spark = SparkSession.builder.appName("nyc-taxi-kafka-stream") \
+        .config("spark.sql.shuffle.partitions", "4") \
+        .config("spark.hadoop.fs.s3a.endpoint", endpoint) \
+        .config("spark.hadoop.fs.s3a.access.key", access_key) \
+        .config("spark.hadoop.fs.s3a.secret.key", secret_key) \
+        .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+        .getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     return spark
 
@@ -74,15 +72,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bootstrap-server", default="localhost:29092")
     parser.add_argument("--topic", default="taxi.trip.events")
-    parser.add_argument("--lookup-path", default="data/lookup/taxi_zone_lookup.csv")
-    parser.add_argument("--silver-path", default="data/silver/trips")
-    parser.add_argument("--quarantine-path", default="data/quarantine/invalid_trips")
+    parser.add_argument("--lookup-path", default="s3a://nyc-lookup/taxi_zone_lookup.csv")
+    parser.add_argument("--silver-path", default="s3a://nyc-silver/trips")
+    parser.add_argument("--quarantine-path", default="s3a://nyc-quarantine/invalid_trips")
     parser.add_argument("--checkpoint-path", default="data/checkpoints/spark_stream_taxi_events")
     parser.add_argument("--trigger-available-now", action="store_true")
-    parser.add_argument("--s3", action="store_true", help="Use MinIO S3-compatible storage")
     args = parser.parse_args()
 
-    spark = build_spark(s3_mode=args.s3)
+    spark = build_spark()
 
     zones = (
         spark.read.option("header", True)

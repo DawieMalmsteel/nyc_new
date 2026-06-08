@@ -92,19 +92,24 @@ cdc-verify:                      ## CDC E2E: seed → register → bridge → ve
 
 # ──────────────────────────────────────────────
 # III. Spark
-spark-batch:                    ## Batch backfill from parquet (fast, no Kafka needed)
+spark-batch: infra-up            ## Batch backfill via MinIO S3 (needs: make minio-setup first)
 	docker run --rm \
+	  --network "nyc_new_default" \
 	  -v "$(PWD):/opt/project" \
 	  -w /opt/project \
+	  -e HOME=/tmp \
 	  --entrypoint /opt/spark/bin/spark-submit \
 	  apache/spark:3.5.1 \
 	  --master local[*] \
+	  --packages "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262" \
+	  --conf spark.jars.ivy=/tmp/.ivy2 \
 	  /opt/project/jobs/spark_local_batch.py \
-	  --input "/opt/project/data/raw/yellow_taxi/year=2024/month=$${MONTH:-01}/yellow_tripdata_2024-$${MONTH:-01}.parquet" \
-	  --lookup "/opt/project/data/lookup/taxi_zone_lookup.csv"
+	  --input "s3a://nyc-raw/yellow_taxi/year=2024/month=$${MONTH:-01}/yellow_tripdata_2024-$${MONTH:-01}.parquet" \
+	  --lookup "s3a://nyc-lookup/taxi_zone_lookup.csv"
 
-spark-streaming:                ## Submit streaming job to Spark master (from Kafka)
-	TOPIC="$${TOPIC:-taxi.trip.events}" bash scripts/start_streaming_job_docker.sh
+spark-streaming: infra-up        ## Submit streaming job reading/writing MinIO S3
+	TOPIC="$${TOPIC:-taxi.trip.events}" \
+	  bash scripts/start_streaming_job_docker.sh
 
 # ──────────────────────────────────────────────
 # IV. Trino
@@ -313,12 +318,7 @@ k8s-down:                       ## Delete kind cluster
 k8s-verify:                     ## Verify K8s pipeline results
 	kubectl run -n nyc-taxi --rm -i temp --image=nyc-pipeline-tools:k8s --restart=Never -- python3 -c "from trino.dbapi import connect; cur = connect('svc-trino', 8080, user='test').cursor(); cur.execute('SELECT count(*) FROM hive.nyc.trips'); print('trips:', cur.fetchone()[0]); cur.execute('SELECT count(*) FROM hive.mart.fact_trips'); print('fact_trips:', cur.fetchone()[0]); cur.execute('SELECT count(*) FROM hive.mart.mart_revenue_by_day'); print('mart_revenue_by_day:', cur.fetchone()[0])"
 
-
-
-# ──────────────────────────────────────────────
-# XI. MinIO / S3-compatible storage
-# ──────────────────────────────────────────────
-.PHONY: minio-setup spark-batch-s3 spark-streaming-s3 verify-minio
+.PHONY: minio-setup verify-minio
 
 COMPOSE_PROJECT ?= nyc_new
 MINIO_NETWORK ?= $(COMPOSE_PROJECT)_default
@@ -326,28 +326,9 @@ MINIO_NETWORK ?= $(COMPOSE_PROJECT)_default
 minio-setup: infra-up            ## Create MinIO buckets + upload raw data
 	docker compose --profile tools run --rm minio-setup
 
-spark-batch-s3: infra-up         ## Batch backfill via MinIO S3 (needs: make minio-setup first)
-	docker run --rm \
-	  --network "$(MINIO_NETWORK)" \
-	  -v "$(PWD):/opt/project" \
-	  -w /opt/project \
-	  -e HOME=/tmp \
-	  --entrypoint /opt/spark/bin/spark-submit \
-	  apache/spark:3.5.1 \
-	  --master local[*] \
-	  --packages "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262" \
-	  --conf spark.jars.ivy=/tmp/.ivy2 \
-	  /opt/project/jobs/spark_local_batch.py \
-	  --s3 \
-	  --input "s3a://nyc-raw/yellow_taxi/year=2024/month=$${MONTH:-01}/yellow_tripdata_2024-$${MONTH:-01}.parquet" \
-	  --lookup "s3a://nyc-lookup/taxi_zone_lookup.csv" \
-	  --silver "s3a://nyc-silver/trips" \
-	  --quarantine "s3a://nyc-quarantine/invalid_trips"
+spark-batch-s3: spark-batch      ## Alias — batch now uses MinIO by default
 
-spark-streaming-s3: infra-up     ## Submit streaming job reading/writing MinIO S3
-	S3_MODE=true \
-	  TOPIC="$${TOPIC:-taxi.trip.events}" \
-	  bash scripts/start_streaming_job_docker.sh
+spark-streaming-s3: spark-streaming ## Alias — streaming now uses MinIO by default
 
 verify-minio:                    ## List MinIO buckets and object counts
 	docker run --rm --network "$(MINIO_NETWORK)" --entrypoint /bin/sh minio/mc:latest \
