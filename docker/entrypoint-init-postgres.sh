@@ -1,12 +1,20 @@
 #!/bin/bash
 # entrypoint-init-postgres.sh
 # Runs once when Postgres volume is first created.
-# WAL logical replication is set via docker command args.
-# This script only creates the trips table.
+# Creates the trips table with REPLICA IDENTITY FULL for Debezium.
 
 set -e
 
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+echo "[postgres-init] waiting for Postgres ..."
+for i in $(seq 30); do
+    python3 -c "import psycopg2; psycopg2.connect(host='svc-postgres-cdc', user='postgres', password='postgres', dbname='nyc_taxi').close()" && break
+    echo "  waiting ... $i"
+    sleep 2
+done
+
+echo "[postgres-init] Postgres ready, creating trips table ..."
+
+PGPASSWORD=postgres psql -h svc-postgres-cdc -U postgres -d nyc_taxi <<-EOSQL
     CREATE TABLE IF NOT EXISTS trips (
         trip_id            SERIAL PRIMARY KEY,
         vendor_id          INTEGER,
@@ -31,3 +39,5 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
 
     ALTER TABLE trips REPLICA IDENTITY FULL;
 EOSQL
+
+echo "[postgres-init] done"

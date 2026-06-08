@@ -3,7 +3,7 @@
 set -e
 echo "[cdc-seed] waiting for Postgres ..."
 for i in $(seq 30); do
-    pg_isready -h nyc_postgres -U postgres -d nyc_taxi && break
+    python3 -c "import psycopg2; psycopg2.connect(host='svc-postgres-cdc', user='postgres', password='postgres', dbname='nyc_taxi').close()" && break
     echo "  waiting ... $i"
     sleep 2
 done
