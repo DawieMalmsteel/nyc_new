@@ -214,8 +214,8 @@ services:
     volumes:
       - ./:/opt/project
     working_dir: /opt/project
-    command: ["entrypoint-cdc-seed",
-      "--input", "/opt/project/data/raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet",
+    entrypoint: ["entrypoint-cdc-seed"]
+    command: ["--input", "/opt/project/data/raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet",
       "--max-rows", "5000"]
     restart: "no"
 

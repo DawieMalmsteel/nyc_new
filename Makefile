@@ -74,7 +74,9 @@ cdc-seed:                        ## Seed Postgres trips table from parquet (5000
 	docker compose --profile tools run --rm cdc-seed
 
 cdc-seed-full:                   ## Seed Postgres with 50K rows
-	docker compose --profile tools run --rm cdc-seed --max-rows 50000
+	docker compose --profile tools run --rm cdc-seed \
+	  --input /opt/project/data/raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet \
+	  --max-rows 50000
 
 cdc-register:                    ## Register Debezium Postgres connector
 	docker compose --profile tools run --rm cdc-register
@@ -90,9 +92,25 @@ cdc-verify:                      ## CDC E2E: seed → register → bridge → ve
 	docker compose --profile tools run --rm cdc-bridge --max-events 500
 	@echo "=== 4/4 Verify via Spark batch (optional, run make verify-all after) ==="
 
+cdc-bridge-bench:                ## Benchmark CDC bridge: seed → register → bridge (async, 500 ev)
+	@echo "=== 1/3 Seed ==="
+	$(MAKE) cdc-seed
+	@echo "=== 2/3 Register connector ==="
+	$(MAKE) cdc-register
+	@echo "=== 3/3 Bridge benchmark (async, 500 events) ==="
+	docker compose --profile tools run --rm cdc-bridge --max-events 500 --flush-interval 100
+
+cdc-bridge-bench-sync:           ## Benchmark CDC bridge: compare sync .get() mode (500 ev)
+	@echo "=== 1/3 Seed ==="
+	$(MAKE) cdc-seed
+	@echo "=== 2/3 Register connector ==="
+	$(MAKE) cdc-register
+	@echo "=== 3/3 Bridge benchmark (sync .get() mode, 500 events) ==="
+	docker compose --profile tools run --rm cdc-bridge --max-events 500 --sync
+
 # ──────────────────────────────────────────────
 # III. Spark
-spark-batch: infra-up            ## Batch backfill via MinIO S3 (needs: make minio-setup first)
+spark-batch:                      ## Batch backfill via MinIO S3 (needs: MinIO + Kafka up first)
 	docker run --rm \
 	  --network "nyc_new_default" \
 	  -v "$(PWD):/opt/project" \
@@ -109,6 +127,17 @@ spark-batch: infra-up            ## Batch backfill via MinIO S3 (needs: make min
 
 spark-streaming: infra-up        ## Submit streaming job reading/writing MinIO S3
 	TOPIC="$${TOPIC:-taxi.trip.events}" \
+	  bash scripts/start_streaming_job_docker.sh
+
+cdc-streaming:                   ## Full CDC → Spark streaming E2E: seed → register → bridge → process
+	$(MAKE) cdc-seed
+	@echo "=== 2/4 Register connector ==="
+	$(MAKE) cdc-register
+	@echo "=== 3/4 Bridge ==="
+	docker compose --profile tools run --rm cdc-bridge --max-events 500 --flush-interval 100
+	@echo "=== 4/4 Spark streaming (trigger-available-now) ==="
+	TOPIC="$${TOPIC:-taxi.trip.events}" \
+	  CHECKPOINT_ROOT="/opt/project/data/checkpoints/spark_stream_taxi_events_docker_cdc" \
 	  bash scripts/start_streaming_job_docker.sh
 
 # ──────────────────────────────────────────────

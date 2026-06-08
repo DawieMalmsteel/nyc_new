@@ -3,7 +3,9 @@ set -euo pipefail
 
 SPARK_VERSION="3.5.1"
 SCALA_BIN="2.12"
-PKG="org.apache.spark:spark-sql-kafka-0-10_${SCALA_BIN}:${SPARK_VERSION}"
+PKG_KAFKA="org.apache.spark:spark-sql-kafka-0-10_${SCALA_BIN}:${SPARK_VERSION}"
+PKG_S3="org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262"
+PKG="${PKG_KAFKA},${PKG_S3}"
 
 echo "[info] S3 mode enabled (MinIO default)"
 

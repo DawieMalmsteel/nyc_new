@@ -172,6 +172,10 @@ def main() -> None:
             (col("passenger_count") < lit(1)) | (col("passenger_count") > lit(6)),
             lit("passenger_count_out_of_range"),
         ),
+        when(
+            col("payment_type").isNull() | (col("payment_type") < lit(1)) | (col("payment_type") > lit(6)),
+            lit("payment_type_out_of_range"),
+        ),
         when(col("pickup_zone").isNull(), lit("pickup_location_not_found")),
         when(col("dropoff_zone").isNull(), lit("dropoff_location_not_found")),
     )

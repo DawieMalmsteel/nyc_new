@@ -118,6 +118,10 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
             F.lit("invalid_passenger_count")
         ),
         F.when(
+            F.col("payment_type").isNull() | (F.col("payment_type") < 1) | (F.col("payment_type") > 6),
+            F.lit("payment_type_out_of_range")
+        ),
+        F.when(
             F.col("pickup_location_id").isNull() |
             (F.col("pickup_borough").isNull() & F.col("pickup_location_id").isNotNull()),
             F.lit("unknown_pickup_location")

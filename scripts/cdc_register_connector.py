@@ -37,6 +37,10 @@ CONNECTOR_CONFIG = {
         "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
         "transforms.unwrap.drop.tombstones": "false",
         "tombstones.on.delete": "false",
+        # Performance tuning
+        "poll.interval.ms": "500",
+        "max.queue.size": "16384",
+        "snapshot.mode": "never",
     },
 }
 
