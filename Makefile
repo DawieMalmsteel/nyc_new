@@ -350,13 +350,11 @@ spark-streaming-s3: infra-up     ## Submit streaming job reading/writing MinIO S
 	  bash scripts/start_streaming_job_docker.sh
 
 verify-minio:                    ## List MinIO buckets and object counts
-	docker run --rm --network "$(MINIO_NETWORK)" minio/mc:latest \
-	  /bin/sh -c " \
-	    mc alias set nyc http://minio:9000 minio minio123 && \
+	docker run --rm --network "$(MINIO_NETWORK)" --entrypoint /bin/sh minio/mc:latest \
+	  -c "mc alias set nyc http://minio:9000 minio minio123 && \
 	    echo '=== Buckets ===' && \
 	    mc ls nyc && \
 	    echo '=== Raw files ===' && \
 	    mc ls --recursive nyc/nyc-raw 2>/dev/null | head -20 && \
 	    echo '=== Lookup files ===' && \
-	    mc ls --recursive nyc/nyc-lookup 2>/dev/null \
-	  "
+	    mc ls --recursive nyc/nyc-lookup 2>/dev/null"
