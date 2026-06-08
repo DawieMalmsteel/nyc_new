@@ -7,7 +7,7 @@ Pipeline xử lý dữ liệu taxi NYC từ raw Parquet / Kafka streaming → Si
 ```mermaid
 flowchart LR
     subgraph BATCH["Batch Path"]
-        RAW[("Raw Parquet")] --> SB[Spark Batch<br/>local[*]]
+        RAW[("Raw Parquet")] --> SB["Spark Batch<br/>local[*]"]
     end
     subgraph STREAM["Streaming Path"]
         KAF1[("Kafka<br/>taxi.trip.events")] --> SS[Spark Streaming]
