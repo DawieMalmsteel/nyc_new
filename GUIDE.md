@@ -50,6 +50,64 @@ make down
 
 ---
 
+### 2.5 S3-compatible storage với MinIO
+
+MinIO được tích hợp sẵn trong Docker Compose (port `9000` S3 API, `9001` Console). Pipeline có thể chạy với MinIO làm data layer thay cho local filesystem.
+
+**Bật MinIO + upload dữ liệu:**
+
+```bash
+make infra-up          # Đảm bảo MinIO đang chạy
+make minio-setup       # Tạo buckets + upload raw parquet + lookup CSV
+```
+
+**Chạy Spark batch với S3:**
+
+```bash
+make spark-batch-s3    # Dùng MONTH=01/02/03 như spark-batch thường
+```
+
+**Trino + dbt với S3 data:**
+
+```bash
+S3_MODE=true make trino-bootstrap   # Register tables từ S3 paths
+make dbt-build                       # dbt không đổi — đọc từ Trino
+```
+
+**Spark streaming với S3:**
+
+```bash
+make spark-streaming-s3
+```
+
+**Kiểm tra dữ liệu trong MinIO:**
+
+```bash
+make verify-minio       # Liệt kê buckets + object counts
+```
+
+Hoặc mở http://localhost:9001 (user: `minio`, pass: `minio123`).
+
+**Kiến trúc S3 mode:**
+
+```
+Raw parquet ─upload─► MinIO (nyc-raw)
+                           │
+                    Spark ─┤ (s3a://, --s3 flag)
+                           │
+                    MinIO (nyc-silver, nyc-quarantine, nyc-lookup)
+                           │
+                    Trino ─┤ (hive.s3.*, S3_MODE=true)
+                           │
+                    dbt ◄──┘
+```
+
+**Lưu ý:**
+
+- `S3_MODE=true` dùng cho `trino-bootstrap`. Khi không set, Trino vẫn đọc từ local FS (mặc định).
+- Spark dùng `s3a://` protocol (Hadoop S3A connector). Trino dùng `s3://` protocol.
+- Chạy `make spark-batch-s3` yêu cầu `make infra-up` trước đó (network compose để Spark container reach MinIO).
+
 ## 3. Chạy trên Kubernetes (kind)
 
 ### 3.1 Tạo cluster

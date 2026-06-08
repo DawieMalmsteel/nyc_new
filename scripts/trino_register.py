@@ -20,6 +20,16 @@ QUARANTINE_PATH = os.environ.get("QUARANTINE_PATH", "/opt/project/data/quarantin
 ZONES_PATH = os.environ.get("ZONES_PATH", "/opt/project/data/lookup/")
 SCHEMA = "hive.nyc"
 
+S3_MODE = os.environ.get("S3_MODE", "").lower() in ("1", "true", "yes")
+S3_BUCKET_SILVER = os.environ.get("S3_BUCKET_SILVER", "nyc-silver")
+S3_BUCKET_QUARANTINE = os.environ.get("S3_BUCKET_QUARANTINE", "nyc-quarantine")
+S3_BUCKET_LOOKUP = os.environ.get("S3_BUCKET_LOOKUP", "nyc-lookup")
+
+# When S3_MODE is active, override paths to S3 (Trino uses s3:// protocol)
+if S3_MODE:
+    SILVER_PATH = f"s3://{S3_BUCKET_SILVER}/trips"
+    QUARANTINE_PATH = f"s3://{S3_BUCKET_QUARANTINE}/invalid_trips"
+    ZONES_PATH = f"s3://{S3_BUCKET_LOOKUP}/"
 
 TRIPS_COLS = [
     "trip_id BIGINT",
@@ -108,13 +118,13 @@ def main() -> int:
     print(f"[trino] create schema {SCHEMA}")
     exec_(cur, f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
 
-    for table, cols, location in [
-        ("trips", TRIPS_COLS, SILVER_PATH),
-        ("invalid_trips", INVALID_COLS, QUARANTINE_PATH),
+    for table, cols, location, partitioned in [
+        ("trips", TRIPS_COLS, SILVER_PATH, True),
+        ("invalid_trips", INVALID_COLS, QUARANTINE_PATH, False),
     ]:
         print(f"[trino] create {table}")
         exec_(cur, f"DROP TABLE IF EXISTS {SCHEMA}.{table}")
-        exec_(cur, make_create(table, cols, location))
+        exec_(cur, make_create(table, cols, location, partitioned=partitioned))
 
     # Create taxi_zone_lookup as external table from CSV
     print("[trino] create taxi_zone_lookup")
@@ -137,12 +147,13 @@ def main() -> int:
     """)
 
     print("[trino] sync partitions + smoke test")
-    for table in ("trips", "invalid_trips"):
+    for table in ("trips",):
         cur.execute(
             f"CALL hive.system.sync_partition_metadata("
             f"schema_name => 'nyc', table_name => '{table}', mode => 'FULL')"
         )
         cur.fetchall()
+    for table in ("trips", "invalid_trips"):
         cur.execute(f"SELECT COUNT(*) FROM {SCHEMA}.{table}")
         n = cur.fetchone()[0]
         print(f"[trino]   {table:<15} = {n}")

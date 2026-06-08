@@ -15,20 +15,34 @@ Usage:
       --silver "/opt/project/data/silver/trips" \
       --quarantine "/opt/project/data/quarantine/invalid_trips"
 """
+import os
 import argparse
 from pyspark.sql import SparkSession, functions as F, types as T
 
-def run_batch(input_path, lookup_path, silver_path, quarantine_path):
+def run_batch(input_path, lookup_path, silver_path, quarantine_path, s3_mode=False):
     print(f"Starting enriched batch")
     print(f"  input:      {input_path}")
     print(f"  lookup:     {lookup_path}")
     print(f"  silver:     {silver_path}")
     print(f"  quarantine: {quarantine_path}")
 
-    spark = SparkSession.builder \
-        .appName("LocalBatchEnriched") \
-        .master("local[*]") \
-        .getOrCreate()
+    if s3_mode:
+        endpoint = os.environ.get("MINIO_ENDPOINT", "http://minio:9000")
+        access_key = os.environ.get("MINIO_ACCESS_KEY", "minio")
+        secret_key = os.environ.get("MINIO_SECRET_KEY", "minio123")
+        spark = SparkSession.builder \
+            .appName("LocalBatchEnriched") \
+            .master("local[*]") \
+            .config("spark.hadoop.fs.s3a.endpoint", endpoint) \
+            .config("spark.hadoop.fs.s3a.access.key", access_key) \
+            .config("spark.hadoop.fs.s3a.secret.key", secret_key) \
+            .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+            .getOrCreate()
+    else:
+        spark = SparkSession.builder \
+            .appName("LocalBatchEnriched") \
+            .master("local[*]") \
+            .getOrCreate()
 
     # --- 1. Read raw parquet ---
     raw = spark.read.parquet(input_path)
@@ -171,9 +185,10 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--s3", action="store_true", help="Use MinIO S3-compatible storage")
     parser.add_argument("--input", required=True)
     parser.add_argument("--lookup", required=True)
     parser.add_argument("--silver", default="/opt/project/data/silver/trips")
     parser.add_argument("--quarantine", default="/opt/project/data/quarantine/invalid_trips")
     args = parser.parse_args()
-    run_batch(args.input, args.lookup, args.silver, args.quarantine)
+    run_batch(args.input, args.lookup, args.silver, args.quarantine, s3_mode=args.s3)

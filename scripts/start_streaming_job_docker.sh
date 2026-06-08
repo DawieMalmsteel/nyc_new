@@ -5,6 +5,21 @@ SPARK_VERSION="3.5.1"
 SCALA_BIN="2.12"
 PKG="org.apache.spark:spark-sql-kafka-0-10_${SCALA_BIN}:${SPARK_VERSION}"
 
+# S3 mode — read/write via MinIO S3-compatible storage
+S3_FLAG=""
+if [ "${S3_MODE:-false}" = "true" ] || [ "${1:-}" = "--s3" ]; then
+    S3_FLAG="--s3"
+    SILVER_PATH="${SILVER_PATH:-s3a://nyc-silver/trips}"
+    QUARANTINE_PATH="${QUARANTINE_PATH:-s3a://nyc-quarantine/invalid_trips}"
+    LOOKUP_PATH="${LOOKUP_PATH:-s3a://nyc-lookup/taxi_zone_lookup.csv}"
+    echo "[info] S3 mode enabled"
+fi
+
+# Remove --s3 from args if passed
+if [ "${1:-}" = "--s3" ]; then
+    shift
+fi
+
 TOPIC="${TOPIC:-taxi.trip.events}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-/opt/project/data/checkpoints/spark_stream_taxi_events_docker}"
 CHECKPOINT_PATH="${CHECKPOINT_PATH:-${CHECKPOINT_ROOT}/${TOPIC}}"
@@ -25,6 +40,7 @@ docker compose exec -T spark-master /opt/spark/bin/spark-submit \
   --conf spark.jars.ivy=/tmp/.ivy2 \
   --packages "${PKG}" \
   /opt/project/jobs/spark_stream_taxi_events.py \
+  ${S3_FLAG:+--s3} \
   --bootstrap-server kafka:9092 \
   --topic "${TOPIC}" \
   --lookup-path "${LOOKUP_PATH}" \

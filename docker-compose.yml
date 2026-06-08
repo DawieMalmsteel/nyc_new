@@ -48,6 +48,34 @@ services:
     volumes:
       - minio_data:/data
 
+  minio-setup:
+    image: minio/mc:latest
+    container_name: nyc_minio_setup
+    profiles: ["tools"]
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        mc alias set nyc http://minio:9000 minio minio123
+        for bucket in nyc-raw nyc-silver nyc-quarantine nyc-lookup; do
+          if mc ls "nyc/$${bucket}" >/dev/null 2>&1; then
+            echo "bucket '$${bucket}' exists"
+          else
+            mc mb "nyc/$${bucket}"
+          fi
+        done
+        echo "=== Uploading raw parquet ==="
+        mc cp --recursive /data/raw/yellow_taxi/ nyc/nyc-raw/yellow_taxi/
+        echo "=== Uploading lookup ==="
+        mc cp /data/lookup/taxi_zone_lookup.csv nyc/nyc-lookup/
+        echo "=== Done ==="
+        mc ls nyc
+    volumes:
+      - ./data:/data
+    restart: "no"
+
   spark-master:
     image: apache/spark:3.5.1
     container_name: nyc_spark_master
@@ -260,6 +288,7 @@ services:
     working_dir: /opt/project/dbt
     environment:
       DBT_PROFILES_DIR: /opt/project/dbt
+      TRINO_HOST: trino-coordinator
     command: ["entrypoint-dbt"]
     restart: "no"
 
