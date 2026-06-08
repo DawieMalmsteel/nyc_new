@@ -17,3 +17,5 @@ models:
       +materialized: view
     marts:
       +materialized: view
+    gold:
+      +materialized: view

@@ -24,6 +24,8 @@ spec:
           value: /opt/project/data/silver/trips
         - name: QUARANTINE_PATH
           value: /opt/project/data/quarantine/invalid_trips
+        - name: ZONES_PATH
+          value: /opt/project/data/lookup/
         volumeMounts:
         - name: project-files
           mountPath: /opt/project

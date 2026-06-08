@@ -15,27 +15,21 @@ from trino.exceptions import TrinoUserError
 
 TRINO_HOST = os.environ.get("TRINO_HOST", "trino-coordinator")
 TRINO_PORT = int(os.environ.get("TRINO_PORT", "8080"))
+SILVER_PATH = os.environ.get("SILVER_PATH", "/opt/project/data/silver/trips")
+QUARANTINE_PATH = os.environ.get("QUARANTINE_PATH", "/opt/project/data/quarantine/invalid_trips")
+ZONES_PATH = os.environ.get("ZONES_PATH", "/opt/project/data/lookup/")
 SCHEMA = "hive.nyc"
-SILVER_PATH = os.environ.get("SILVER_PATH", "/data/silver/trips")
-QUARANTINE_PATH = os.environ.get("QUARANTINE_PATH", "/data/quarantine/invalid_trips")
 
 
 TRIPS_COLS = [
-    "kafka_topic VARCHAR",
-    "kafka_partition INTEGER",
-    "kafka_offset BIGINT",
-    "kafka_timestamp TIMESTAMP",
-    "raw_value VARCHAR",
-    "event_id VARCHAR",
-    "event_timestamp VARCHAR",
+    "trip_id BIGINT",
     "source_file VARCHAR",
     "vendor_id INTEGER",
-    "pickup_datetime VARCHAR",
-    "dropoff_datetime VARCHAR",
+    "pickup_ts TIMESTAMP",
+    "dropoff_ts TIMESTAMP",
     "passenger_count INTEGER",
     "trip_distance DOUBLE",
     "rate_code_id INTEGER",
-    "store_and_fwd_flag VARCHAR",
     "pickup_location_id INTEGER",
     "dropoff_location_id INTEGER",
     "payment_type INTEGER",
@@ -46,18 +40,16 @@ TRIPS_COLS = [
     "tolls_amount DOUBLE",
     "improvement_surcharge DOUBLE",
     "total_amount DOUBLE",
-    "pickup_ts TIMESTAMP",
-    "dropoff_ts TIMESTAMP",
-    "event_ts TIMESTAMP",
-    "ingestion_ts TIMESTAMP",
-    "pickup_date DATE",
-    "pickup_hour INTEGER",
     "pickup_borough VARCHAR",
     "pickup_zone VARCHAR",
     "pickup_service_zone VARCHAR",
     "dropoff_borough VARCHAR",
     "dropoff_zone VARCHAR",
     "dropoff_service_zone VARCHAR",
+    "pickup_date DATE",
+    "pickup_hour INTEGER",
+    "event_ts TIMESTAMP",
+    "ingestion_ts TIMESTAMP",
     "pickup_year INTEGER",
     "pickup_month INTEGER",
 ]
@@ -94,13 +86,16 @@ def exec_(cur, sql: str) -> None:
         raise
 
 
-def make_create(table: str, cols: list[str], location: str) -> str:
+def make_create(table: str, cols: list[str], location: str, partitioned: bool = True) -> str:
+    partitioned_clause = ""
+    if partitioned:
+        partitioned_clause = ", partitioned_by = ARRAY['pickup_year','pickup_month']"
     return (
         f"CREATE TABLE {SCHEMA}.{table} (\n  "
         + ",\n  ".join(cols)
-        + f"\n) WITH (external_location = '{location}', "
-        + "format = 'PARQUET', "
-        + "partitioned_by = ARRAY['pickup_year','pickup_month'])"
+        + f"\n) WITH (external_location = '{location}', format = 'PARQUET'"
+        + partitioned_clause
+        + ")"
     )
 
 
@@ -121,6 +116,26 @@ def main() -> int:
         exec_(cur, f"DROP TABLE IF EXISTS {SCHEMA}.{table}")
         exec_(cur, make_create(table, cols, location))
 
+    # Create taxi_zone_lookup as external table from CSV
+    print("[trino] create taxi_zone_lookup")
+    exec_(cur, f"DROP TABLE IF EXISTS {SCHEMA}.taxi_zone_lookup")
+    exec_(cur, f"""
+        CREATE TABLE {SCHEMA}.taxi_zone_lookup (
+          location_id VARCHAR,
+          borough VARCHAR,
+          zone VARCHAR,
+          service_zone VARCHAR
+        )
+        WITH (
+          external_location = '{ZONES_PATH}',
+          format = 'CSV',
+          csv_separator = ',',
+          csv_escape = '\\',
+          csv_quote = '\"',
+          skip_header_line_count = 1
+        )
+    """)
+
     print("[trino] sync partitions + smoke test")
     for table in ("trips", "invalid_trips"):
         cur.execute(
@@ -131,6 +146,11 @@ def main() -> int:
         cur.execute(f"SELECT COUNT(*) FROM {SCHEMA}.{table}")
         n = cur.fetchone()[0]
         print(f"[trino]   {table:<15} = {n}")
+
+    # Check taxi_zone_lookup separately (not partitioned)
+    cur.execute(f"SELECT COUNT(*) FROM {SCHEMA}.taxi_zone_lookup")
+    n = cur.fetchone()[0]
+    print(f"[trino]   taxi_zone_lookup = {n}")
 
     conn.close()
     return 0

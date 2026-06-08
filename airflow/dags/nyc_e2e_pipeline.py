@@ -117,4 +117,17 @@ with DAG(
     superset_bootstrap = PythonOperator(task_id="superset_bootstrap", python_callable=run_superset_bootstrap)
     analytics_check = PythonOperator(task_id="analytics_check", python_callable=validate_analytics)
 
+    # Dynamically run spark batch for months 01-03
+    for m in ["01", "02", "03"]:
+        spark_batch = PythonOperator(
+            task_id=f"spark_batch_{m}",
+            python_callable=_run,
+            op_args=[["/opt/spark/bin/spark-submit", "--master", "local[*]", "/opt/project/jobs/spark_local_batch.py",
+                      "--input", f"/opt/project/data/raw/yellow_taxi/year=2024/month={m}/yellow_tripdata_2024-{m}.parquet",
+                      "--lookup", "/opt/project/data/lookup/taxi_zone_lookup.csv",
+                      "--silver", "/opt/project/data/silver/trips",
+                      "--quarantine", "/opt/project/data/quarantine/invalid_trips"]]
+        )
+        spark_batch >> trino_bootstrap
+
     spark_streaming >> trino_bootstrap >> dbt_build >> superset_bootstrap >> analytics_check

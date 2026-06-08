@@ -30,28 +30,11 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
         .master("local[*]") \
         .getOrCreate()
 
-    # Pre-clean output dirs (Spark runs as uid 185; dirs must be 777 on host)
-    import subprocess
-    import os
-    for p in [silver_path, quarantine_path]:
-        subprocess.run(["rm", "-rf", os.path.join(p, "*"), os.path.join(p, ".*")], shell=True, capture_output=True)
-        print(f"  pre-cleaned {p}")
-    # Also clean trino-metastore to avoid stale HMS entries
-    metastore = os.path.join(os.path.dirname(silver_path), "..", "..", "trino-metastore")
-    subprocess.run(["rm", "-rf", os.path.join(metastore, "*")], shell=True, capture_output=True)
+    # Enables dynamic partition overwrite (only touch matching partitions)
+    spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
     # --- 1. Read raw parquet ---
     raw = spark.read.parquet(input_path)
 
-    # Clean output directories (avoid Spark overwrite permission issue)
-    hadoop = spark._jvm.org.apache.hadoop
-    fs = hadoop.fs.FileSystem.get(spark._jsc.hadoopConfiguration())
-    for path in [silver_path, quarantine_path]:
-        p = hadoop.fs.Path(path)
-        if fs.exists(p):
-            fs.delete(p, True)
-            print(f"  cleaned {path}")
-
-    # --- 2. Read zone lookup ---
     zones_raw = spark.read.option("header", "true").csv(lookup_path)
     zones = zones_raw.select(
         F.col("LocationID").cast("int").alias("location_id"),
@@ -92,6 +75,16 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
         F.col("total_amount").cast("double"),
     )
 
+    # Add trip_id (hash of pickup_ts + pickup_loc + dropoff_loc) + source_file
+    input_filename = input_path.split("/")[-1]
+    enriched = enriched \
+        .withColumn("trip_id",
+            F.xxhash64(F.concat_ws("|",
+                F.col("pickup_ts").cast("string"),
+                F.col("pickup_location_id").cast("string"),
+                F.col("dropoff_location_id").cast("string")
+            ))) \
+        .withColumn("source_file", F.lit(input_filename))
     # Add metadata columns
     enriched = enriched \
         .withColumn("event_ts", F.current_timestamp()) \
@@ -143,6 +136,7 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
 
     # Select columns for silver
     silver_columns = [
+        "trip_id", "source_file",
         "vendor_id", "pickup_ts", "dropoff_ts", "passenger_count", "trip_distance",
         "rate_code_id", "pickup_location_id", "dropoff_location_id", "payment_type",
         "fare_amount", "extra", "mta_tax", "tip_amount", "tolls_amount",
@@ -158,7 +152,7 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
     if valid_count > 0:
         valid.select(silver_columns) \
             .write.partitionBy("pickup_year", "pickup_month") \
-            .mode("append") \
+            .mode("overwrite") \
             .parquet(silver_path)
         print(f"Valid trips written: {valid_count}")
     else:

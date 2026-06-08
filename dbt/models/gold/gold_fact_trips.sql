@@ -1,0 +1,37 @@
+-- Gold: fact_trips materialized as table for performant analytics.
+{{ config(materialized='view') }}
+
+select
+  trip_id,
+  source_file,
+  vendor_id,
+  pickup_ts,
+  dropoff_ts,
+  date_trunc('hour', pickup_ts)                        as pickup_hour_ts,
+  date(pickup_ts)                                      as pickup_date,
+  hour(pickup_ts)                                      as pickup_hour,
+  day_of_week(pickup_ts)                               as pickup_dow,
+  passenger_count,
+  trip_distance,
+  rate_code_id,
+  payment_type,
+  fare_amount,
+  extra,
+  mta_tax,
+  tip_amount,
+  tolls_amount,
+  improvement_surcharge,
+  total_amount,
+  case when total_amount > 0 then tip_amount / total_amount end as tip_rate,
+  date_diff('second', pickup_ts, dropoff_ts)           as trip_duration_sec,
+  pickup_location_id,
+  dropoff_location_id,
+  pickup_zone,
+  dropoff_zone,
+  pickup_borough,
+  dropoff_borough,
+  pickup_service_zone,
+  dropoff_service_zone,
+  pickup_year,
+  pickup_month
+from {{ ref('stg_trips') }}
