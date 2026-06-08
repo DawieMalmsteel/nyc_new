@@ -1,9 +1,8 @@
-# PLAN.md — NYC Taxi Pipeline (Kafka-first, local, cập nhật 2026-06-05)
+# PLAN.md — NYC Taxi Pipeline (MinIO S3, cập nhật 2026-06-08)
 
 ## 1) Mục tiêu
 
-Pipeline **Kafka-first** cho NYC Taxi, chạy **toàn bộ local trước** khi đưa lên cloud.
-Có 2 đường ingestion: **batch** (fast, dùng cho backfill/verify) và **streaming** (Kafka).
+Pipeline **Kafka-first** cho NYC Taxi, lưu trữ data layer qua **MinIO S3** (S3-compatible). Có 2 đường ingestion: **batch** (fast, dùng cho backfill/verify) và **streaming** (Kafka).
 
 ```text
 [Batch]              [Streaming]
@@ -11,11 +10,11 @@ Raw Parquet          Kafka Producer (generator)
     ↓                        ↓
 spark_local_batch    spark_stream_taxi_events   ← Spark Docker
     ↓                        ↓
-    └──→ Parquet (silver / quarantine) ←──┘
+    └──→ MinIO S3 (silver / quarantine) ←──┘
                     ↓
-              Trino (Hive catalog)
+              Trino (Hive catalog + S3 connector)
                     ↓
-              dbt-trino (6 models + 9 tests)
+              dbt-trino (15 models + 9 tests)
                     ↓
               Analytics SQL (10 câu) + Superset (4 charts + dashboard)
                     ↓
@@ -25,13 +24,13 @@ spark_local_batch    spark_stream_taxi_events   ← Spark Docker
 ---
 
 ## 2) Entry point: Makefile
-
 ```bash
 make infra-up           # Core: ZK, Kafka, MinIO, Spark
-make infra-up-all       # Tất cả services (cả CDC)
-make spark-batch        # Batch 2.7M rows (~30s)
-make trino-bootstrap    # Register tables
-make dbt-build          # dbt models + tests (PASS 15/15)
+make infra-up-all       # Tất cả services (gồm Trino, dbt, Superset, Airflow)
+make minio-setup        # Upload raw data lên MinIO (cần chạy 1 lần đầu)
+make spark-batch        # Batch 3 tháng (lần lượt MONTH=01,02,03)
+make trino-bootstrap    # Register tables từ S3 paths
+make dbt-build          # dbt models + tests (PASS 24/24)
 make superset-bootstrap # DB, dataset, 4 charts, dashboard
 make verify-all         # Full 7-step pipeline verify (gồm CDC)
 make cdc-verify         # CDC E2E: seed → register → bridge
@@ -39,15 +38,16 @@ make cdc-verify         # CDC E2E: seed → register → bridge
 
 Xem thêm `AGENTS.md` cho danh sách đầy đủ targets và hướng dẫn chi tiết.
 
----
+## 3) Trạng thái hiện tại (verified 2026-06-08)
+### Hạ tầng Docker Compose (16+ services, 6 profiles)
 
-## 3) Trạng thái hiện tại (verified 2026-06-05)
-### Hạ tầng Docker Compose (18 services, 6 profiles)
+**Storage backend**: MinIO S3 (`s3a://`) cho raw, silver, quarantine, lookup data. Local filesystem chỉ cho Hive metastore và streaming checkpoints.
+### Docker Compose profiles
 
 | Profile | Services |
 |---|---|
 | default | ZK, Kafka, Kafka-UI, MinIO, Spark Master/Worker |
-| tools | topic-init, topic-run, generator, quality-report, **nyc_postgres, debezium, cdc-seed, cdc-register, cdc-bridge** |
+| tools | topic-init, topic-run, generator, quality-report, nyc_postgres, debezium, cdc-seed, cdc-register, cdc-bridge |
 | trino | trino-coordinator, trino-bootstrap |
 | dbt | dbt |
 | superset | superset |
@@ -64,32 +64,40 @@ File: `docker-compose.yml` — profile-based, volume `./:/opt/project`.
 
 ### Batch pipeline (path chính cho verify)
 
-- `jobs/spark_local_batch.py` — đọc raw parquet + zone lookup, enrichment, validation, split valid/invalid
-- Kết quả: **2,724,037 valid** / **240,587 invalid** cho tháng 01/2024
-- Chạy bằng: `make spark-batch` (docker `apache/spark:3.5.1 local[*]`)
-- Permission: Spark UID 185 != host UID 1000 → dirs phải 777. `make setup-volumes` fix.
+- `jobs/spark_local_batch.py` — đọc raw parquet từ **MinIO S3** + zone lookup, enrichment, validation, split valid/invalid
+- Chạy bằng: `make spark-batch` (docker `apache/spark:3.5.1 local[*]`, `--packages hadoop-aws:3.3.4,aws-java-sdk-bundle:1.12.262`)
+- Input từ `s3a://nyc-raw/...`, output vào `s3a://nyc-silver/trips` + `s3a://nyc-quarantine/invalid_trips`
+- **Không cần flag `--s3`** — S3 là default
+- Kết quả 3 tháng:
+  | Month | Valid | Invalid |
+  |:--|:--|:--|
+  | 01 | 2,724,037 | 240,587 |
+  | 02 | 2,719,926 | 287,600 |
+  | 03 | 3,036,445 | 546,183 |
+  | **Total** | **8,480,408** | **1,074,370** |
 
 ### Streaming pipeline (Kafka-first)
 
 - `generator/taxi_event_generator.py` — đọc parquet batch, push JSON events lên Kafka topic `taxi.trip.events`
-- `jobs/spark_stream_taxi_events.py` — Spark Structured Streaming consumer, enrichment, validation
+- `jobs/spark_stream_taxi_events.py` — Spark Structured Streaming consumer, enrichment, validation — **always S3 mode**
 - E2E test: `make verify-e2e` (5000 events)
 - Script: `scripts/local_e2e_test.sh` / `scripts/local_e2e_full_9_5m.sh`
 
 ### Trino (analytics query engine)
 
 - Image: `trinodb/trino:435`
-- Hive connector file-based HMS, catalog `hive`
-- Schema `nyc` với tables `trips` + `invalid_trips` từ parquet
+- Hive connector file-based HMS + S3 connector (`hive.s3.*` config), catalog `hive`
+- Schema `nyc` với tables `trips` (partitioned) + `invalid_trips` (non-partitioned) + `taxi_zone_lookup` (CSV)
+- S3 paths mặc định (không cần `S3_MODE=1`)
 - `make trino-bootstrap` → register tables + sync partitions + smoke test
-- Kết quả: trips = 2,724,037, invalid_trips = 0 (batch)
+- Kết quả: trips = 8,480,408, invalid_trips = 1,074,370, taxi_zone_lookup = 265
 
 ### dbt (data transformation)
 
-- `dbt-trino` 1.10.2, models `view` (HMS file-based không hỗ trợ rename)
-- 6 models: `stg_trips`, `stg_invalid_trips`, `dim_zone`, `fact_trips`, `fact_invalid_trips`, `mart_hourly_summary`
-- 9 data tests: not_null checks, payment_type range
-- `make dbt-build` → **PASS=15 WARN=0 ERROR=0**
+- `dbt-trino` 1.11.x, models `view` (HMS file-based không hỗ trợ rename)
+- **15 models** (3 staging + 3 marts + 4 gold + 5 additional marts), 9 data tests
+- Naming: `stg_` → staging, `dim_`/`fact_` → marts, `gold_` → gold layer, `mart_` → summaries
+- `make dbt-build` → **PASS=24 WARN=0 ERROR=0**
 
 ### Superset (visualization)
 
@@ -103,6 +111,7 @@ File: `docker-compose.yml` — profile-based, volume `./:/opt/project`.
 - Postgres metadata, LocalExecutor, Docker-in-Docker
 - 2 DAGs: `nyc_analytics_refresh` (dbt → Superset → analytics), `nyc_e2e_pipeline` (full)
 - PythonOperator gọi `subprocess.run(["docker", ...])` với absolute host paths
+
 ### Debezium CDC (Postgres → Kafka → events)
 
 - Postgres 16 (`nyc_postgres`) với WAL logical replication, `wal_level=logical`
@@ -113,25 +122,19 @@ File: `docker-compose.yml` — profile-based, volume `./:/opt/project`.
 - Unwrap transform loại bỏ `before/after/op` envelope, bridge convert microsecond timestamps → string
 - Makefile targets: `cdc-up`, `cdc-seed`, `cdc-register`, `cdc-bridge`, `cdc-verify`
 - Verified: 500 CDC events → `taxi.trip.events` topic (8.5s)
-├── docker-compose.yml    ← 18 services, 6 profiles
 ---
 
 ## 4) Cấu trúc project
-
-```text
 nyc_new/
-├── Makefile              ← Entry point chính (30+ targets)
+├── Makefile              ← Entry point chính (40+ targets)
 ├── AGENTS.md             ← Hướng dẫn cho AI assistant
-├── PLAN.md / README.md / flow.md
-├── docker-compose.yml    ← 18 services, 6 profiles
+├── PLAN.md / GUIDE.md / workflow.md
+├── docker-compose.yml    ← 16+ services, 6 profiles
 ├── .gitignore
 │
-├── jobs/                 # Spark processors
-│   ├── spark_local_batch.py           # Batch backfill (working)
-│   ├── spark_stream_taxi_events.py    # Streaming (Kafka → silver)
-│   ├── spark_batch_backfill.py        # (legacy)
-│   ├── kafka_stream_processor.py      # Fallback local (legacy)
-│   └── spark_quality_report.py
+├── jobs/                 # Spark processors (MinIO S3 default)
+│   ├── spark_local_batch.py           # Batch backfill — reads S3, writes S3
+│   └── spark_stream_taxi_events.py    # Streaming (Kafka → S3)
 │
 ├── generator/            # Kafka event generator
 │   ├── taxi_event_generator.py
@@ -147,7 +150,7 @@ nyc_new/
 │   ├── local_e2e_test.sh / local_e2e_full_9_5m.sh
 │   ├── download_data.sh
 │   ├── run_generator.sh / run_generator_full.sh
-│   └── start_streaming_job.sh / start_streaming_job_docker.sh
+│   └── start_streaming_job_docker.sh
 │
 ├── airflow/dags/
 │   ├── nyc_analytics_refresh.py
@@ -155,74 +158,81 @@ nyc_new/
 │
 ├── dbt/                  # Transformation layer
 │   ├── dbt_project.yml / profiles.yml
-│   ├── models/staging/stg_trips.sql, stg_invalid_trips.sql
-│   ├── models/marts/dim_zone.sql, fact_trips.sql, fact_invalid_trips.sql, mart_hourly_summary.sql
-│   └── tests/ (4 test files, 9 tests)
+│   ├── models/staging/  (3 models)
+│   ├── models/marts/    (8 models)
+│   ├── models/gold/     (4 models)
+│   └── tests/           (4 test files, 9 tests)
 │
 ├── docker/               # Dockerfiles + configs
 │   ├── tools.Dockerfile / dbt.Dockerfile / airflow.Dockerfile
 │   ├── entrypoint-*.sh (7 files)
-│   ├── trino/etc/ (config.properties, hive.properties, jvm.config, ...)
+│   ├── trino/etc/ (config.properties, hive.properties với S3, jvm.config, ...)
 │   └── superset/ (entrypoint, bootstrap_superset.sh, superset_config.py)
 │
 ├── sql/
 │   ├── analytics_questions.sql    # 10 câu SQL
 │   └── smoke_tests.sql
 │
+├── k8s/                  # Kubernetes manifests (kind cluster)
+│   ├── spark/ / trino/ / dbt/ / airflow/ / superset/ / kafka/ / debezium/ / postgres-cdc/
+│   └── storage/ / jobs/ / configs/
+│
 └── data/                 # (gitignored)
     ├── raw/ / silver/ / quarantine/ / checkpoints/ / trino-metastore/
-    └── lookup/taxi_zone_lookup.csv
 ```
 
 ---
-
 ## 5) Data Quality rules
 
-- `pickup_datetime` not null/valid
-- `dropoff_datetime` not null/valid
-- `dropoff > pickup`
-- `trip_distance > 0`
-- `fare_amount >= 0`
-- `total_amount >= fare_amount`
-- `passenger_count in [1..6]`
-- pickup/dropoff location tồn tại trong `taxi_zone_lookup`
+- `pickup_ts` not null/valid
+- `dropoff_ts` not null/valid
+- `dropoff_ts` > `pickup_ts`
+- `trip_distance` > 0
+- `fare_amount` >= 0
+- `total_amount` >= `fare_amount`
+- `passenger_count` in [1..6]
+- pickup/dropoff_location_id tồn tại trong `taxi_zone_lookup`
 
 Invalid records → quarantine (không drop im lặng).
 
 ---
 
-## 6) Kết quả verify (2026-06-05)
+## 6) Kết quả verify (2026-06-08 — clean run, 3 months via MinIO S3)
 
 | Bước | Kết quả |
 |---|---|
-| `make spark-batch` | Valid: 2,724,037 / Invalid: 240,587 |
-| `make trino-bootstrap` | Trips: 2,724,037 |
-| `make dbt-build` | PASS=15 WARN=0 ERROR=0 |
-| `make verify-mart` | dim_zone=261, fact_trips=2.7M, mart_hourly=3,945 |
+| `make spark-batch` MONTH=01 | Valid: 2,724,037 / Invalid: 240,587 |
+| `make spark-batch` MONTH=02 | Valid: 2,719,926 / Invalid: 287,600 |
+| `make spark-batch` MONTH=03 | Valid: 3,036,445 / Invalid: 546,183 |
+| `make trino-bootstrap` | Trips: 8,480,408 / Invalid: 1,074,370 / Zone: 265 |
+| `make dbt-build` | PASS=24 WARN=0 ERROR=0 |
+| `make verify-mart` | dim_zone=261, fact_trips=8.48M, mart_hourly=11,748 |
 | `make verify-analytics` | PASS 10/10 |
 | `make superset-check` | 1 DB + 1 dataset + 4 charts + 1 dashboard |
-| `make verify-cdc` | Postgres 5000 rows + Debezium RUNNING + 2 topics OK |
 | **`make verify-all`** | **ALL 7/7 PASS** |
+| `make verify-cdc` | Postgres 5000 rows + Debezium RUNNING + 2 topics OK |
 
 ## 7) Còn lại / Next
 
-- [ ] **Cloud migration**: S3 → local FS, Glue HMS → file-based HMS, marts `materialized='table'`
+- [x] **MinIO S3 migration** (June 2026) — Spark batch/streaming, Trino, dbt đều dùng S3 paths mặc định
+- [x] **Full data run**: 9.5M rows (3 tháng) end-to-end via MinIO S3 — verified 2026-06-08
+- [ ] **Cloud migration**: S3 → AWS S3, Glue HMS → file-based HMS, marts `materialized='table'`
   - Helm chart cho K8s deployment
-  - S3 thay MinIO (EMRFS / S3A connector)
+  - AWS S3 thay MinIO (EMRFS / S3A connector)
   - AWS Glue / Unity Catalog thay file-based Hive Metastore
   - EMR Serverless / EMR on EKS thay Spark local[*]
   - Amazon MWAA thay Airflow LocalExecutor
   - Amazon QuickSight thay Superset (hoặc Superset auth)
-- [ ] **Superset auth**: Bật PASSWORD/JWT authentication (hiện đang WTF_CSRF_ENABLED=False)
-- [ ] **Full data run**: 9.5M rows (3 tháng) end-to-end — requires resources, deferred
 
 ---
 
 ## 8) Ghi chú quan trọng
 
 - **Makefile là entry point**: Không gõ docker commands thủ công.
-- **Spark permission**: UID 185 (container) ≠ 1000 (host). `make setup-volumes` set 777.
-- **dbt mart `view`**: Hive file-HMS không hỗ trợ rename → tất cả marts là `view`.
+- **MinIO S3 default**: Spark batch/streaming dùng `s3a://` paths mặc định. Không cần `--s3` flag hay `S3_MODE=1`.
+- **MinIO credentials**: Hardcoded `minio/minio123` trong Spark config (`fs.s3a.*`), Trino catalog (`hive.s3.*`), và mc alias. Đổi ở tất cả chỗ nếu rotate.
+- **MinIO network**: Spark container cần `--network nyc_new_default` để reach MinIO (đã có trong Makefile `spark-batch`).
+- **dbt mart `view`**: Hive file-based HMS không hỗ trợ rename → tất cả marts là `view`. Dùng `materialized='table'` sẽ fail.
 - **Trino 435**: `node.environment` + `node.data-dir` trong `node.properties`, không trong `config.properties`.
 - **Trino auth**: Bỏ `http-server.authentication.type` cho local dev; Trino vẫn yêu cầu `X-Trino-User` header.
 - **Superset CSRF**: `WTF_CSRF_ENABLED=False` trong `superset_config.py` để REST POST không cần CSRF token.
@@ -230,3 +240,4 @@ Invalid records → quarantine (không drop im lặng).
 - **sqlalchemy-trino**: Phải `pip install` trong Superset container (đã add vào entrypoint).
 - **Airflow DIND**: Dùng absolute host paths (`/home/dwcks/vsf_gsm/nyc_new`) trong Docker CLI.
 - **HMS mount**: `data/trino-metastore` phải `:rw` để `sync_partition_metadata` hoạt động.
+- **`spark-batch-s3` / `spark-streaming-s3`**: Alias targets — giữ lại cho backward compat.

@@ -16,13 +16,14 @@ flowchart LR
         PG[("Postgres WAL")] --> DZ[Debezium] --> KAF2[("Kafka<br/>nyc_cdc.public.trips")]
         KAF2 --> BRIDGE[cdc-bridge] --> KAF1
     end
-    SB --> SILVER[("Silver Parquet<br/>pickup_year/month")]
+    SB --> SILVER[("MinIO S3<br/>nyc-silver/trips/")]
     SS --> SILVER
+    SB --> QUARANTINE[("MinIO S3<br/>nyc-quarantine/")]
+    SS --> QUARANTINE
     SILVER --> TRINO[Trino Hive Catalog]
-    TRINO --> DBT[dbt-trino<br/>views]
+    TRINO --> DBT[dbt-trino views]
     DBT --> SUPERSET[Superset Dashboard]
-    AIRFLOW[Airflow] -..-> SB & TRINO & DBT & SUPERSET
-    MINIO[("MinIO")] -.-x SB & SS
+    AIRFLOW[Airflow] -..-> SB & SS & TRINO & DBT & SUPERSET
 ```
 
 ---
@@ -43,9 +44,11 @@ flowchart LR
   - `nyc_cdc.public.trips` — CDC từ Debezium
 - **Kafka UI** (`provectuslabs/kafka-ui`): port 8080
 
-### 3. MinIO (`minio/minio`)
+### 3. MinIO (`minio/minio:latest`)
 - **Port**: 9000 (S3 API) / 9001 (Console)
-- **Vai trò**: Lưu trữ object (chưa tích hợp pipeline, dành cho tương lai).
+- **Buckets**: `nyc-raw`, `nyc-silver`, `nyc-quarantine`, `nyc-lookup`
+- **Credentials**: `minio` / `minio123`
+- **Vai trò**: Default S3-compatible storage cho pipeline data (raw, silver, quarantine, lookup). Spark jobs dùng S3A connector, Trino dùng `hive.s3.*` config.
 
 ### 4. Spark Master & Worker (`apache/spark:3.5.1`)
 - **Master**: port 7077 (cluster), 8081 (web UI)
@@ -67,9 +70,8 @@ flowchart LR
     ADDID --> META[Add metadata<br/>pickup_year/month]
     META --> JOIN[Join zones<br/>CSV lookup]
     JOIN --> VALIDATE[Validate rules]
-    VALIDATE --> SPLIT{Split}
-    SPLIT -->|valid| SILVER[("Silver<br/>partitioned")]
-    SPLIT -->|invalid| QUARANTINE[("Quarantine")]
+    SPLIT -->|valid| SILVER[("MinIO S3<br/>nyc-silver/trips/")]
+    SPLIT -->|invalid| QUARANTINE[("MinIO S3<br/>nyc-quarantine/")]
 ```
 
 
@@ -84,29 +86,38 @@ flowchart LR
 | Total vs fare | `total_amount < fare_amount` |
 | Passenger count | NULL hoặc `NOT BETWEEN 1 AND 6` |
 | Pickup zone | Không tìm thấy trong lookup |
-| Dropoff zone | Không tìm thấy trong lookup |
-
 **Output**:
-- `data/silver/trips/` — Parquet, partition: `pickup_year=N/pickup_month=N`
-- `data/quarantine/invalid_trips/` — Parquet, không partition
+- `s3a://nyc-silver/trips/` — Parquet, partition: `pickup_year=N/pickup_month=N`
+- `s3a://nyc-quarantine/invalid_trips/` — Parquet, không partition
+
+**S3 Mode**: Spark batch dùng S3A Hadoop connector (`--packages hadoop-aws:3.3.4,aws-java-sdk-bundle:1.12.262`). Không cần `--s3` flag — S3 là default.
 
 **CLI**:
 ```bash
-spark-submit --master local[*] jobs/spark_local_batch.py \
-  --input <path> --lookup <path> --silver <path> --quarantine <path>
-```
+make spark-batch MONTH=01    # Via Makefile (MinIO S3 default)
 
+# Hoặc trực tiếp:
+docker run --rm --network nyc_new_default --entrypoint /opt/spark/bin/spark-submit \
+  apache/spark:3.5.1 \
+  --master local[*] \
+  --packages "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262" \
+  --conf spark.jars.ivy=/tmp/.ivy2 \
+  jobs/spark_local_batch.py \
+  --input "s3a://nyc-raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet" \
+  --lookup "s3a://nyc-lookup/taxi_zone_lookup.csv"
+```
 ### 6. Spark Streaming (`spark_stream_taxi_events.py`)
 **File**: `jobs/spark_stream_taxi_events.py`
 
-**Mục đích**: Consumer Kafka streaming events (`taxi.trip.events`), xử lý realtime.
+**Mục đích**: Consumer Kafka streaming events (`taxi.trip.events`), xử lý realtime — always S3 mode.
 
 **Khác biệt với batch**:
 - Đọc từ Kafka (JSON) thay vì Parquet
 - Schema `EVENT_SCHEMA` (StructType) định nghĩa 19 trường
 - Dùng `foreachBatch` với `trigger(availableNow=True)` cho batch-mode consumption
 - Validation tương tự batch job
-- Output: append vào silver/quarantine parquet
+- Output: append vào `s3a://nyc-silver/trips` / `s3a://nyc-quarantine/invalid_trips`
+
 
 **Stream format** (event JSON):
 ```json
@@ -188,21 +199,22 @@ Debezium event (unwrap) → {
 
 ### 11. Trino Coordinator (`trinodb/trino:435`)
 - **Port**: 8083
-- **Catalog**: `hive` — kết nối Hive Metastore từ parquet files
+- **Catalog**: `hive` — Hive connector + S3 connector (`hive.s3.*` config), đọc parquet từ MinIO S3
 - **Schema**: `nyc` (silver), `mart` (dbt views)
+- **S3 paths**: S3 paths mặc định (không cần `S3_MODE=1`)
 - **Tables**:
-  - `hive.nyc.trips` — external, partitioned by pickup_year/month
-  - `hive.nyc.invalid_trips` — external
-  - `hive.nyc.taxi_zone_lookup` — external CSV
+  - `hive.nyc.trips` — external, partitioned by pickup_year/month, location `s3://nyc-silver/trips`
+  - `hive.nyc.invalid_trips` — external, location `s3://nyc-quarantine/invalid_trips`
+  - `hive.nyc.taxi_zone_lookup` — external CSV, location `s3://nyc-lookup/`
 
 ### 12. Trino Bootstrap (`scripts/trino_register.py`)
 **Mục đích**: Register tables trong Hive catalog.
 
 ```mermaid
 flowchart LR
-    DROP[DROP TABLE IF EXISTS] --> CREATE[CREATE TABLE<br/>external_location Parquet]
-    CREATE --> SYNC[CALL sync_partition_metadata<br/>mode FULL]
-    SYNC --> COUNT[SELECT COUNT(*)]
+    DROP[DROP TABLE IF EXISTS] --> CREATE[CREATE TABLE external_location Parquet]
+    CREATE --> SYNC[CALL sync_partition_metadata mode FULL]
+    SYNC --> COUNT["SELECT COUNT(*)"]
     COUNT --> DONE[Done]
 ```
 
@@ -263,11 +275,9 @@ flowchart LR
     4. `daily_trips` (line chart)
   - Create dashboard "NYC Taxi Overview"
 
----
-
 ## VII. Orchestration (Airflow)
 
-### 14. Airflow (`apache/airflow:2.9.1`)
+### 14. Airflow (`apache/airflow:2.10.5`)
 - **Port**: 8085 (admin/admin)
 - **Entrypoint**: `docker/entrypoint-airflow.sh` — role-based:
   - `webserver` → start Airflow webserver
@@ -278,7 +288,10 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    M01[spark_batch_m01] & M02[spark_batch_m02] & M03[spark_batch_m03] --> TRINO[trino_bootstrap]
+    MINIO[minio_setup] --> M01[spark_batch_m01]
+    MINIO --> M02[spark_batch_m02]
+    MINIO --> M03[spark_batch_m03]
+    M01 & M02 & M03 --> TRINO[trino_bootstrap]
     TRINO --> DBT[dbt_build]
     DBT --> SUPERSET[superset_bootstrap]
     SUPERSET --> CHECK[analytics_check]
@@ -315,13 +328,13 @@ Trên Kubernetes (kind), Airflow DAG tương tự nhưng dùng `kubectl apply` t
 ```bash
 make infra-up              # Start core: ZK, Kafka, MinIO, Spark
 make kafka-topics          # Create topics
-make spark-batch           # Run batch for months 01, 02, 03
-make trino-bootstrap       # Register tables in Hive catalog
+make minio-setup           # Upload raw data lên MinIO (chạy 1 lần đầu)
+make spark-batch           # Run batch cho months 01, 02, 03 (MONTH=01/02/03)
+make trino-bootstrap       # Register tables trong Hive catalog (S3 paths)
 make dbt-build             # dbt models + tests (24/24 PASS)
 make superset-bootstrap    # Register DB, dataset, charts, dashboard
 make verify-all            # Full verification
 ```
-
 ### **Docker Compose Flow (Make targets)**
 
 | Step | `make` target | What happens |
@@ -329,14 +342,14 @@ make verify-all            # Full verification
 | 1 | `infra-up` | Start ZK, Kafka, Kafka-UI, MinIO, Spark Master/Worker |
 | 2 | `infra-up-all` | + Trino, dbt container, Superset, Airflow |
 | 3 | `kafka-topics` | Create 3 topics (events, invalid, dlq) |
-| 4 | `spark-batch` | Run Spark batch cho 3 tháng (mỗi tháng ~200s) |
-| 5 | `trino-bootstrap` | DROP + CREATE tables trong hive.nyc |
-| 6 | `dbt-build` | dbt deps → seed → run (15 views) → test (9 tests) |
-| 7 | `verify-mart` | Row counts: dim_zone=261, fact_trips=~8.5M, etc. |
-| 8 | `superset-bootstrap` | Register DB → dataset → 4 charts → dashboard |
-| 9 | `verify-analytics` | 10 SQL queries → PASS 10/10 |
-| 10 | `verify-all` | Full pipeline + Superset check |
-
+| 4 | `minio-setup` | Upload raw parquet + lookup lên MinIO (chạy 1 lần) |
+| 5 | `spark-batch` MONTH=01/02/03 | Spark batch S3, đọc từ `s3a://nyc-raw`, ghi `s3a://nyc-silver` |
+| 6 | `trino-bootstrap` | DROP + CREATE tables trong hive.nyc (S3 paths) |
+| 7 | `dbt-build` | dbt deps → seed → run (15 views) → test (9 tests) → PASS 24/24 |
+| 8 | `verify-mart` | Row counts: dim_zone=261, fact_trips=~8.48M, mart_hourly=11,748 |
+| 9 | `superset-bootstrap` | Register DB → dataset → 4 charts → dashboard |
+| 10 | `verify-analytics` | 10 SQL queries → PASS 10/10 |
+| 11 | `verify-all` | Full pipeline + Superset check |
 ### **CDC Pipeline (Debezium)**
 
 ```bash
@@ -374,25 +387,23 @@ make k8s-down          # Delete cluster
 
 ## IX. Data Directory Structure
 
+**Lưu ý**: Silver, quarantine và lookup data được lưu trong **MinIO S3** (buckets `nyc-silver`, `nyc-quarantine`, `nyc-lookup`). Local `data/` chỉ chứa raw source, checkpoints và Hive metastore.
+
 ```
 data/
-├── raw/
-│   └── yellow_taxi/year=2024/
-│       ├── month=01/yellow_tripdata_2024-01.parquet   (~48MB)
-│       ├── month=02/yellow_tripdata_2024-02.parquet   (~48MB)
-│       └── month=03/yellow_tripdata_2024-03.parquet   (~57MB)
-├── silver/
-│   └── trips/
-│       └── pickup_year=2024/
-│           ├── pickup_month=1/   (~86MB, ~2.7M rows)
-│           ├── pickup_month=2/   (~86MB, ~2.7M rows)
-│           └── pickup_month=3/   (~96MB, ~3.0M rows)
-├── quarantine/
-│   └── invalid_trips/   (~8MB, ~1M invalid rows)
+├── raw/yellow_taxi/year=2024/
+│   ├── month=01/yellow_tripdata_2024-01.parquet   (~48MB)
+│   ├── month=02/yellow_tripdata_2024-02.parquet   (~48MB)
+│   └── month=03/yellow_tripdata_2024-03.parquet   (~57MB)
 ├── lookup/
 │   └── taxi_zone_lookup.csv       (265 zones)
-├── checkpoints/                    (streaming offset tracking)
-└── trino-metastore/                (Hive HMS database)
+├── checkpoints/                    (streaming offset — local)
+└── trino-metastore/                (Hive HMS DB — local)
+
+MinIO S3 buckets:
+  s3a://nyc-silver/trips/pickup_year=2024/pickup_month={1,2,3}/  ~268MB total, ~8.48M rows
+  s3a://nyc-quarantine/invalid_trips/                             ~8MB, ~1.07M invalid rows
+  s3a://nyc-lookup/taxi_zone_lookup.csv                           lookup data
 ```
 
 ---
@@ -412,22 +423,21 @@ data/
 | Trino | `trino:435` | 8083 | `nyc_trino` | tools, trino | unless-stopped |
 | Superset | `superset:4.0.0` | 8088 | `nyc_superset` | tools, superset | unless-stopped |
 | Airflow PG | `postgres:16-alpine` | - | `nyc_airflow_postgres` | airflow | unless-stopped |
-| Airflow | `nyc-airflow:k8s` | 8085 | `nyc_airflow_webserver` | airflow | unless-stopped |
 
 **One-shot jobs** (`restart: "no"`): topic-init, generator, quality-report, cdc-seed, cdc-register, cdc-bridge, trino-bootstrap, dbt.
 
 ---
 
 ## XI. CLI Reference
-
 ### Docker Compose
 ```bash
-make infra-up            # Start core
-make infra-up-all        # Start everything
-make spark-batch         # Batch backfill
-make spark-streaming     # Submit streaming job
-make dbt-build           # dbt models + tests
-make verify-all          # Full pipeline
+make infra-up            # Start core: ZK, Kafka, MinIO, Spark
+make infra-up-all        # Start everything (gồm Trino, dbt, Superset, Airflow)
+make minio-setup         # Upload raw data lên MinIO (cần chạy 1 lần đầu)
+make spark-batch         # Batch backfill qua MinIO S3 (MONTH=01/02/03)
+make spark-streaming     # Submit streaming job (always S3 mode)
+make dbt-build           # dbt models + tests (PASS 24/24)
+make verify-all          # Full pipeline verification
 make clean-all           # Delete generated data
 ```
 
