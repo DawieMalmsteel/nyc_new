@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+import os
 from trino.dbapi import connect
 
 
@@ -35,7 +36,9 @@ def main() -> int:
     questions = split_questions(raw)
     print(f"[analytics] {len(questions)} questions found in {SQL_PATH.name}")
 
-    conn = connect(host="localhost", port=8083, user="analytics")
+    host = os.environ.get("TRINO_HOST", "localhost")
+    port = int(os.environ.get("TRINO_PORT", "8083"))
+    conn = connect(host=host, port=port, user="analytics")
     cur = conn.cursor()
     failures = []
     for i, q in enumerate(questions, 1):
