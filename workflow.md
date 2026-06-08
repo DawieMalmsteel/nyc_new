@@ -4,22 +4,25 @@
 
 Pipeline xử lý dữ liệu taxi NYC từ raw Parquet / Kafka streaming → Silver (Spark) → Catalog (Trino/Hive) → Marts (dbt) → Dashboard (Superset).
 
-```
-                    ┌──────────┐
-                    │  MinIO   │ (chưa dùng, để dành)
-                    └──────────┘
-                                                          
-Raw Parquet ──► Spark Batch ──► Silver Parquet ──► Trino (Hive) ──► dbt ──► Superset
-                    │ (local[*])   (partitioned by          ▲           │
-                    │               pickup_year/month)       │           │
-Kafka ──► Spark Streaming ──► Silver Parquet ───────────────┘           │
-         (taxi.trip.events)                                               │
-                                                                          │
-                    CDC Path:                                            │
-Postgres ──► Debezium ──► Kafka ──► cdc-bridge ──► taxi.trip.events      │
-                                                    (reuse streaming)    │
-                                                                          │
-                              Airflow (orchestrates jobs)
+```mermaid
+flowchart LR
+    subgraph BATCH["Batch Path"]
+        RAW[("Raw Parquet")] --> SB[Spark Batch<br/>local[*]]
+    end
+    subgraph STREAM["Streaming Path"]
+        KAF1[("Kafka<br/>taxi.trip.events")] --> SS[Spark Streaming]
+    end
+    subgraph CDC["CDC Path"]
+        PG[("Postgres WAL")] --> DZ[Debezium] --> KAF2[("Kafka<br/>nyc_cdc.public.trips")]
+        KAF2 --> BRIDGE[cdc-bridge] --> KAF1
+    end
+    SB --> SILVER[("Silver Parquet<br/>pickup_year/month")]
+    SS --> SILVER
+    SILVER --> TRINO[Trino Hive Catalog]
+    TRINO --> DBT[dbt-trino<br/>views]
+    DBT --> SUPERSET[Superset Dashboard]
+    AIRFLOW[Airflow] -..-> SB & TRINO & DBT & SUPERSET
+    MINIO[("MinIO")] -.-x SB & SS
 ```
 
 ---
@@ -57,14 +60,18 @@ Postgres ──► Debezium ──► Kafka ──► cdc-bridge ──► taxi.
 **File**: `jobs/spark_local_batch.py`
 
 **Mục đích**: Xử lý backfill từ raw Parquet files, không cần Kafka.
+```mermaid
+flowchart LR
+    INPUT[("Raw Parquet")] --> CAST[Cast columns]
+    CAST --> ADDID[Add trip_id<br/>xxhash64]
+    ADDID --> META[Add metadata<br/>pickup_year/month]
+    META --> JOIN[Join zones<br/>CSV lookup]
+    JOIN --> VALIDATE[Validate rules]
+    VALIDATE --> SPLIT{Split}
+    SPLIT -->|valid| SILVER[("Silver<br/>partitioned")]
+    SPLIT -->|invalid| QUARANTINE[("Quarantine")]
+```
 
-**Luồng xử lý**:
-```
-Input Parquet ─► Cast columns ─► Add trip_id (xxhash64) ─► Add metadata ─►
-  Join zones (CSV lookup) ─► Validate rules ─► Split valid/invalid ─►
-    Valid   → Silver (partitioned by pickup_year/month)
-    Invalid → Quarantine
-```
 
 **Validation rules**:
 | Rule | Điều kiện lỗi |
@@ -147,12 +154,17 @@ spark-submit --master local[*] jobs/spark_local_batch.py \
 
 ### 9. CDC Seed (`scripts/cdc_seed.py`)
 **Mục đích**: Đổ dữ liệu Parquet (5000 rows mặc định) vào Postgres `trips` table.
+```mermaid
+flowchart LR
+    PARQUET[("Parquet")] --> PD[pandas DataFrame]
+    PD --> RENAME[Rename columns]
+    RENAME --> DROP[dropna]
+    DROP --> SAMPLE[Sample max-rows]
+    SAMPLE --> TRUNC[TRUNCATE trips]
+    TRUNC --> TOSQL[to_sql append]
+    TOSQL --> PG[("Postgres trips")]
+```
 
-**Flow**:
-```
-Parquet ─► pandas DataFrame ─► rename columns ─► dropna ─►
-  sample (max-rows) ─► TRUNCATE trips ─► to_sql (append)
-```
 
 ### 10. CDC Bridge (`scripts/cdc_bridge.py`)
 **Mục đích**: Consumer từ Debezium topic (`nyc_cdc.public.trips`), transform sang format `taxi.trip.events`, produce lại.
@@ -186,11 +198,12 @@ Debezium event (unwrap) → {
 ### 12. Trino Bootstrap (`scripts/trino_register.py`)
 **Mục đích**: Register tables trong Hive catalog.
 
-**Flow**:
-```
-DROP TABLE IF EXISTS → CREATE TABLE (external_location='...', format='PARQUET')
-  → CALL hive.system.sync_partition_metadata(mode='FULL')
-  → SELECT COUNT(*) để verify
+```mermaid
+flowchart LR
+    DROP[DROP TABLE IF EXISTS] --> CREATE[CREATE TABLE<br/>external_location Parquet]
+    CREATE --> SYNC[CALL sync_partition_metadata<br/>mode FULL]
+    SYNC --> COUNT[SELECT COUNT(*)]
+    COUNT --> DONE[Done]
 ```
 
 **Zone lookup**: Được register riêng từ CSV với tất cả columns VARCHAR.
@@ -201,27 +214,30 @@ DROP TABLE IF EXISTS → CREATE TABLE (external_location='...', format='PARQUET'
 
 ### Model Hierarchy
 
-```
-hive.nyc.trips (raw parquet via Trino)
-  │
-  ├── stg_trips       (cast columns, fix types)
-  ├── stg_zones       (zone lookup)
-  ├── stg_invalid_trips
-  │
-  ├── fact_trips      (trip_id, tip_rate, trip_duration_sec, derived fields)
-  ├── dim_zone        (zone dimension)
-  ├── fact_invalid_trips
-  │
-  ├── mart_revenue_by_day         (daily: trip count, revenue, avg fare/tip/distance)
-  ├── mart_revenue_by_zone        (zone pair: trip count, revenue, avg)
-  ├── mart_trips_by_hour          (hour × dow: count, revenue, avg duration)
-  ├── mart_payment_type_summary   (by payment type: count, revenue)
-  ├── mart_hourly_summary         (date × hour × borough: count, revenue, avg)
-  │
-  └── gold_fact_trips             (full fact with trip_id + source_file)
-      gold_dim_zone               (zone dimension)
-      gold_mart_revenue_by_day    (daily revenue)
-      gold_mart_revenue_by_zone   (zone pair revenue)
+```mermaid
+flowchart LR
+    subgraph STAGING["Staging"]
+        STG_TRIPS[stg_trips] --> FACT_TRIPS[fact_trips]
+        STG_ZONES[stg_zones] --> FACT_TRIPS
+        STG_INVALID[stg_invalid_trips] --> FACT_INVALID[fact_invalid_trips]
+    end
+    subgraph MARTS["Marts"]
+        FACT_TRIPS --> DIM_ZONE[dim_zone]
+        FACT_TRIPS --> M1[mart_revenue_by_day]
+        FACT_TRIPS --> M2[mart_revenue_by_zone]
+        FACT_TRIPS --> M3[mart_trips_by_hour]
+        FACT_TRIPS --> M4[mart_payment_type_summary]
+        FACT_TRIPS --> M5[mart_hourly_summary]
+    end
+    subgraph GOLD["Gold"]
+        FACT_TRIPS --> G1[gold_fact_trips]
+        STG_ZONES --> G2[gold_dim_zone]
+        M1 --> G3[gold_mart_revenue_by_day]
+        M2 --> G4[gold_mart_revenue_by_zone]
+    end
+    TRIPS[("hive.nyc.trips")] --> STG_TRIPS
+    ZONES[("hive.nyc.taxi_zone_lookup")] --> STG_ZONES
+    INVALID[("hive.nyc.invalid_trips")] --> STG_INVALID
 ```
 
 **Lưu ý**: Tất cả models đều `materialized='view'` (do Hive HMS không support `RENAME TABLE`).
@@ -257,14 +273,17 @@ hive.nyc.trips (raw parquet via Trino)
   - `webserver` → start Airflow webserver
   - `scheduler` → start scheduler
   - `init` → migrate DB + create admin user
-
 ### DAG: `nyc_e2e_pipeline`
 **Schedule**: manual trigger
 
-**Tasks**:
+```mermaid
+flowchart LR
+    M01[spark_batch_m01] & M02[spark_batch_m02] & M03[spark_batch_m03] --> TRINO[trino_bootstrap]
+    TRINO --> DBT[dbt_build]
+    DBT --> SUPERSET[superset_bootstrap]
+    SUPERSET --> CHECK[analytics_check]
 ```
-Batch (for each month) ─► Trino Bootstrap ─► dbt Build ─► Superset Bootstrap ─► Analytics Check
-```
+
 
 **Flow**:
 1. `spark_batch_m01` → chạy spark-submit cho tháng 01
@@ -275,15 +294,16 @@ Batch (for each month) ─► Trino Bootstrap ─► dbt Build ─► Superset B
 6. `superset_bootstrap` → register DB/dataset/charts/dashboard
 7. `analytics_check` → run 10 SQL questions, assert all return rows
 
+
 ### DAG: `nyc_analytics_refresh`
 **Schedule**: manual (hoặc `@hourly` trong production)
 
-**Tasks**:
-```
-dbt_build → superset_bootstrap → analytics_check
+```mermaid
+flowchart LR
+    DBT[dbt_build] --> SUPERSET[superset_bootstrap]
+    SUPERSET --> CHECK[analytics_check]
 ```
 
-### K8s version
 Trên Kubernetes (kind), Airflow DAG tương tự nhưng dùng `kubectl apply` thay vì `docker run`.
 
 ---
@@ -328,23 +348,15 @@ make cdc-verify        # Full CDC E2E verification
 ```
 
 **CDC Flow**:
-```
-Postgres trips table
-  │  (INSERT/UPDATE/DELETE)
-  ▼
-WAL (Write-Ahead Log)
-  │  (Debezium captures via pgoutput plugin)
-  ▼
-Kafka topic: nyc_cdc.public.trips
-  │  (Debezium envelope: before/after/op/ts_ms)
-  ▼
-cdc-bridge.py
-  │  (transform → standard event format)
-  ▼
-Kafka topic: taxi.trip.events
-  │  (Spark streaming consumer)
-  ▼
-Silver Parquet (append)
+
+```mermaid
+flowchart TD
+    PG[("Postgres trips table")] -->|INSERT/UPDATE/DELETE| WAL[WAL Write-Ahead Log]
+    WAL -->|Debezium pgoutput plugin| DEBEZIUM[Debezium Connect]
+    DEBEZIUM --> KAFKA_CDC[("Kafka: nyc_cdc.public.trips<br/>(envelope format)")]
+    KAFKA_CDC --> BRIDGE[cdc-bridge.py]
+    BRIDGE -->|transform to standard format| KAFKA_EVENTS[("Kafka: taxi.trip.events")]
+    KAFKA_EVENTS -->|Spark streaming consumer| SILVER[("Silver Parquet append")]
 ```
 
 ### **Kubernetes (kind) Flow**
