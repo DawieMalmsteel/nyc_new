@@ -241,3 +241,82 @@ clean-all: clean-checkpoints clean-metastore
 	mkdir -p data/silver/trips data/quarantine/invalid_trips
 	chmod 777 data/silver/trips data/quarantine/invalid_trips
 	@echo "All generated data cleaned"
+
+# ──────────────────────────────────────────────
+# X. Kubernetes (kind)
+# ──────────────────────────────────────────────
+.PHONY: k8s-cluster k8s-images k8s-deploy k8s-down k8s-status k8s-logs k8s-pipeline k8s-verify
+
+KIND_CLUSTER ?= kind
+KIND_CONFIG ?= kind.yaml
+
+k8s-cluster:                    ## Create kind cluster with 3 nodes
+	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
+
+k8s-images:                     ## Build & load custom images into kind
+	docker build -f docker/tools.Dockerfile -t nyc-pipeline-tools:k8s .
+	docker build -f docker/dbt.Dockerfile -t nyc-dbt:k8s .
+	docker build -f docker/airflow.Dockerfile -t nyc-airflow:k8s .
+	kind load docker-image nyc-pipeline-tools:k8s nyc-dbt:k8s nyc-airflow:k8s --name $(KIND_CLUSTER)
+
+k8s-deploy:                     ## Deploy all K8s manifests (ordered)
+	kubectl apply -f k8s/namespace/
+	kubectl apply -f k8s/storage/
+	kubectl apply -f k8s/zookeeper/
+	kubectl apply -f k8s/kafka/
+	kubectl apply -f k8s/minio/
+	kubectl apply -f k8s/kafka-ui/
+	kubectl apply -f k8s/spark/
+	kubectl apply -f k8s/postgres-cdc/
+	kubectl apply -f k8s/debezium/
+	kubectl apply -f k8s/trino/
+	kubectl apply -f k8s/superset/
+	kubectl apply -f k8s/airflow/postgres/
+	kubectl apply -f k8s/airflow/
+	kubectl apply -f k8s/dbt/
+	kubectl apply -f k8s/jobs/
+
+k8s-pipeline:                   ## Run full K8s pipeline (jobs in order)
+	kubectl apply -f k8s/jobs/postgres-init.yaml -n nyc-taxi
+	kubectl apply -f k8s/jobs/topic-init.yaml -n nyc-taxi
+	@echo "Waiting for init jobs..."
+	kubectl wait --for=condition=complete job/postgres-init -n nyc-taxi --timeout=60s
+	kubectl wait --for=condition=complete job/topic-init -n nyc-taxi --timeout=60s
+	kubectl apply -f k8s/jobs/cdc-seed.yaml -n nyc-taxi
+	kubectl apply -f k8s/jobs/cdc-register.yaml -n nyc-taxi
+	kubectl wait --for=condition=complete job/cdc-seed -n nyc-taxi --timeout=120s
+	kubectl wait --for=condition=complete job/cdc-register -n nyc-taxi --timeout=120s
+	kubectl apply -f k8s/jobs/spark-batch-m01.yaml -n nyc-taxi
+	kubectl apply -f k8s/jobs/spark-batch-m02.yaml -n nyc-taxi
+	kubectl apply -f k8s/jobs/spark-batch-m03.yaml -n nyc-taxi
+	kubectl wait --for=condition=complete job/spark-batch-m01 -n nyc-taxi --timeout=600s
+	kubectl wait --for=condition=complete job/spark-batch-m02 -n nyc-taxi --timeout=600s
+	kubectl wait --for=condition=complete job/spark-batch-m03 -n nyc-taxi --timeout=600s
+	kubectl apply -f k8s/jobs/trino-bootstrap.yaml -n nyc-taxi
+	kubectl wait --for=condition=complete job/trino-bootstrap -n nyc-taxi --timeout=120s
+	kubectl apply -f k8s/dbt/job.yaml -n nyc-taxi
+	kubectl wait --for=condition=complete job/dbt-build -n nyc-taxi --timeout=180s
+	kubectl apply -f k8s/jobs/cdc-bridge.yaml -n nyc-taxi
+	kubectl wait --for=condition=complete job/cdc-bridge -n nyc-taxi --timeout=120s
+
+k8s-verify:                     ## Verify K8s pipeline results
+	kubectl run -n nyc-taxi --rm -i temp --image=nyc-pipeline-tools:k8s --restart=Never -- python3 -c "
+from trino.dbapi import connect
+cur = connect('svc-trino', 8080, user='test').cursor()
+cur.execute('SELECT count(*) FROM hive.nyc.trips')
+print('trips:', cur.fetchone()[0])
+cur.execute('SELECT count(*) FROM hive.mart.fact_trips')
+print('fact_trips:', cur.fetchone()[0])
+cur.execute('SELECT count(*) FROM hive.mart.mart_revenue_by_day')
+print('mart_revenue_by_day:', cur.fetchone()[0])
+"
+
+k8s-status:                     ## Show K8s pod status
+	kubectl get pods -n nyc-taxi -o wide
+
+k8s-logs:                       ## Tail logs (usage: make k8s-logs JOB=spark-batch-m01)
+	kubectl logs -n nyc-taxi job/$(JOB) --follow
+
+k8s-down:                       ## Delete kind cluster
+	kind delete cluster --name $(KIND_CLUSTER)
+
