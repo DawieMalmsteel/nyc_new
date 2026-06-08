@@ -30,8 +30,6 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
         .master("local[*]") \
         .getOrCreate()
 
-    # Enables dynamic partition overwrite (only touch matching partitions)
-    spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
     # --- 1. Read raw parquet ---
     raw = spark.read.parquet(input_path)
 
@@ -152,7 +150,7 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
     if valid_count > 0:
         valid.select(silver_columns) \
             .write.partitionBy("pickup_year", "pickup_month") \
-            .mode("overwrite") \
+            .mode("append") \
             .parquet(silver_path)
         print(f"Valid trips written: {valid_count}")
     else:
