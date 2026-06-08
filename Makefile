@@ -299,17 +299,6 @@ k8s-pipeline:                   ## Run full K8s pipeline (jobs in order)
 	kubectl apply -f k8s/jobs/cdc-bridge.yaml -n nyc-taxi
 	kubectl wait --for=condition=complete job/cdc-bridge -n nyc-taxi --timeout=120s
 
-k8s-verify:                     ## Verify K8s pipeline results
-	kubectl run -n nyc-taxi --rm -i temp --image=nyc-pipeline-tools:k8s --restart=Never -- python3 -c "
-from trino.dbapi import connect
-cur = connect('svc-trino', 8080, user='test').cursor()
-cur.execute('SELECT count(*) FROM hive.nyc.trips')
-print('trips:', cur.fetchone()[0])
-cur.execute('SELECT count(*) FROM hive.mart.fact_trips')
-print('fact_trips:', cur.fetchone()[0])
-cur.execute('SELECT count(*) FROM hive.mart.mart_revenue_by_day')
-print('mart_revenue_by_day:', cur.fetchone()[0])
-"
 
 k8s-status:                     ## Show K8s pod status
 	kubectl get pods -n nyc-taxi -o wide
@@ -319,4 +308,8 @@ k8s-logs:                       ## Tail logs (usage: make k8s-logs JOB=spark-bat
 
 k8s-down:                       ## Delete kind cluster
 	kind delete cluster --name $(KIND_CLUSTER)
+
+
+k8s-verify:                     ## Verify K8s pipeline results
+	kubectl run -n nyc-taxi --rm -i temp --image=nyc-pipeline-tools:k8s --restart=Never -- python3 -c "from trino.dbapi import connect; cur = connect('svc-trino', 8080, user='test').cursor(); cur.execute('SELECT count(*) FROM hive.nyc.trips'); print('trips:', cur.fetchone()[0]); cur.execute('SELECT count(*) FROM hive.mart.fact_trips'); print('fact_trips:', cur.fetchone()[0]); cur.execute('SELECT count(*) FROM hive.mart.mart_revenue_by_day'); print('mart_revenue_by_day:', cur.fetchone()[0])"
 
