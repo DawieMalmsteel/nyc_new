@@ -279,7 +279,7 @@ clean-all: clean-checkpoints clean-metastore
 # ──────────────────────────────────────────────
 # X. Kubernetes (kind)
 # ──────────────────────────────────────────────
-.PHONY: k8s-cluster k8s-images k8s-deploy k8s-down k8s-status k8s-logs k8s-pipeline k8s-verify
+.PHONY: k8s-cluster k8s-images k8s-deploy k8s-down k8s-start k8s-stop k8s-destroy k8s-ui k8s-ui-stop k8s-status k8s-logs k8s-pipeline k8s-verify
 
 KIND_CLUSTER ?= kind
 KIND_CONFIG ?= kind.yaml
@@ -294,6 +294,9 @@ k8s-images:                     ## Build & load custom images into kind
 	kind load docker-image nyc-pipeline-tools:k8s nyc-dbt:k8s nyc-airflow:k8s --name $(KIND_CLUSTER)
 
 k8s-deploy:                     ## Deploy all K8s manifests (ordered)
+	@echo "Cleaning up old jobs..."
+	-kubectl delete job -n nyc-taxi --all 2>/dev/null || true
+	-kubectl delete job --all 2>/dev/null || true
 	kubectl apply -f k8s/namespace/
 	kubectl apply -f k8s/storage/
 	kubectl apply -f k8s/zookeeper/
@@ -307,8 +310,8 @@ k8s-deploy:                     ## Deploy all K8s manifests (ordered)
 	kubectl apply -f k8s/superset/
 	kubectl apply -f k8s/airflow/postgres/
 	kubectl apply -f k8s/airflow/
-	kubectl apply -f k8s/dbt/
-	kubectl apply -f k8s/jobs/
+	kubectl apply -n nyc-taxi -f k8s/dbt/
+	kubectl apply -n nyc-taxi -f k8s/jobs/
 
 k8s-pipeline:                   ## Run full K8s pipeline (jobs in order)
 	kubectl apply -f k8s/jobs/postgres-init.yaml -n nyc-taxi
@@ -342,6 +345,47 @@ k8s-logs:                       ## Tail logs (usage: make k8s-logs JOB=spark-bat
 
 k8s-down:                       ## Delete kind cluster
 	kind delete cluster --name $(KIND_CLUSTER)
+
+k8s-ui:                         ## Start port-forwards for all K8s UIs
+	@./scripts/k8s_ui.sh start
+
+k8s-ui-stop:                    ## Stop all port-forwards
+	@./scripts/k8s_ui.sh stop
+k8s-start:                      ## Start everything: cluster, images, services, UIs
+	@if ! kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
+		echo "Creating kind cluster..."; \
+		kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG); \
+		echo "Building & loading custom images..."; \
+		docker build -q -f docker/tools.Dockerfile -t nyc-pipeline-tools:k8s .; \
+		docker build -q -f docker/dbt.Dockerfile -t nyc-dbt:k8s .; \
+		docker build -q -f docker/airflow.Dockerfile -t nyc-airflow:k8s .; \
+		kind load docker-image nyc-pipeline-tools:k8s nyc-dbt:k8s nyc-airflow:k8s --name $(KIND_CLUSTER); \
+	fi
+	$(MAKE) k8s-deploy
+	@echo "Scaling up services..."
+	-kubectl scale deployment -n nyc-taxi --all --replicas=1 2>/dev/null || true
+	-kubectl scale statefulset -n nyc-taxi --all --replicas=1 2>/dev/null || true
+	@echo "Waiting for services to be ready..."
+	-kubectl wait --for=condition=ready pod -l app=zookeeper -n nyc-taxi --timeout=120s 2>/dev/null
+	-kubectl wait --for=condition=ready pod -l app=kafka -n nyc-taxi --timeout=120s 2>/dev/null
+	-kubectl wait --for=condition=ready pod -l app=minio -n nyc-taxi --timeout=120s 2>/dev/null
+	-kubectl wait --for=condition=ready pod -l app=spark-master -n nyc-taxi --timeout=60s 2>/dev/null
+	-kubectl wait --for=condition=ready pod -l app=debezium -n nyc-taxi --timeout=60s 2>/dev/null
+	-kubectl wait --for=condition=ready pod -l app=trino -n nyc-taxi --timeout=60s 2>/dev/null
+	-kubectl wait --for=condition=ready pod -l app=superset -n nyc-taxi --timeout=60s 2>/dev/null
+	$(MAKE) k8s-ui
+
+k8s-stop: k8s-ui-stop           ## Scale down all services (keep data)
+	@echo "Scaling down deployments..."
+	kubectl scale deployment -n nyc-taxi --all --replicas=0 2>/dev/null || true
+	@echo "Scaling down statefulsets..."
+	kubectl scale statefulset -n nyc-taxi --all --replicas=0 2>/dev/null || true
+	@echo "All services stopped"
+
+k8s-destroy: k8s-ui-stop        ## Delete kind cluster (services + volumes + images)
+	@echo "Deleting kind cluster $(KIND_CLUSTER)..."
+	kind delete cluster --name $(KIND_CLUSTER)
+	@echo "Cluster deleted — all services, volumes, and images removed"
 
 
 k8s-verify:                     ## Verify K8s pipeline results
