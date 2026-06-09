@@ -59,3 +59,11 @@ airflow/logs/
 airflow/dags/__pycache__/
 airflow/plugins/
 airflow/config/
+
+# ── Terraform ──
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfplan
+terraform/terraform.tfvars
+terraform/*.auto.tfvars

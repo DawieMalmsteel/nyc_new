@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: zookeeper
+  namespace: nyc-taxi
 spec:
   replicas: 1
   serviceName: svc-zookeeper
