@@ -21,7 +21,9 @@ spec:
         - "--bootstrap-server"
         - "svc-kafka:9092"
         - "--max-events"
-        - "500"
+        - "0"
+        - "--idle-timeout"
+        - "5"
         volumeMounts:
         - name: project-files
           mountPath: /opt/project

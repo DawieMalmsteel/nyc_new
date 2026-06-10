@@ -72,6 +72,8 @@ def main():
                         help="Kafka producer linger.ms for batching (default 100)")
     parser.add_argument("--sync", action="store_true",
                         help="Use sync .get() per message (old behavior, for comparison)")
+    parser.add_argument("--idle-timeout", type=float, default=0,
+                        help="Exit after N seconds with no new messages (default 0 = no limit)")
     args = parser.parse_args()
 
     consumer = KafkaConsumer(
@@ -95,28 +97,39 @@ def main():
     print(f"[cdc-bridge] consuming from '{args.input_topic}' -> '{args.output_topic}'")
     print(f"[cdc-bridge] producer: linger_ms={args.linger_ms}, flush_interval={args.flush_interval}")
     sent = 0
+    last_msg_ts = time.time()
     start_ts = time.time()
     flush_count = 0
     try:
-        for msg in consumer:
-            event = msg.value
-            tx = transform(event)
-            if tx is None:
+        while True:
+            records = consumer.poll(timeout_ms=int(args.poll_timeout * 1000))
+            if not records:
+                idle = time.time() - last_msg_ts
+                if args.idle_timeout > 0 and idle >= args.idle_timeout:
+                    print(f"[cdc-bridge] idle {idle:.0f}s >= timeout {args.idle_timeout}s, stopping")
+                    break
                 continue
-            if args.sync:
-                # Old behavior: sync .get() after each event (slow)
-                producer.send(args.output_topic, value=tx).get(timeout=10)
-            else:
-                # Async send — no .get() blocking
-                producer.send(args.output_topic, value=tx)
-            sent += 1
 
-            if sent % args.flush_interval == 0:
-                producer.flush()
-                flush_count += 1
+            for _tp, msgs in records.items():
+                for msg in msgs:
+                    event = msg.value
+                    tx = transform(event)
+                    if tx is None:
+                        continue
+                    if args.sync:
+                        producer.send(args.output_topic, value=tx).get(timeout=10)
+                    else:
+                        producer.send(args.output_topic, value=tx)
+                    sent += 1
+                    last_msg_ts = time.time()
+
+            if sent > 0:
                 elapsed = time.time() - start_ts
                 rate = sent / elapsed if elapsed > 0 else 0
-                print(f"[cdc-bridge] bridged {sent} events ({rate:.0f} ev/s)")
+                if (sent // args.flush_interval) > flush_count:
+                    flush_count = sent // args.flush_interval
+                    producer.flush()
+                    print(f"[cdc-bridge] bridged {sent} events ({rate:.0f} ev/s)")
 
             if args.max_events > 0 and sent >= args.max_events:
                 print(f"[cdc-bridge] reached limit {args.max_events}, stopping")
