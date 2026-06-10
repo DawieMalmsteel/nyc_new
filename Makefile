@@ -128,7 +128,7 @@ k8s-verify:                    ## Verify row counts via Trino
 	  -- python3 scripts/verify_mart.py
 
 .PHONY: infra-up infra-up-all infra-down infra-status infra-logs
-.PHONY: kafka-topics kafka-publish
+.PHONY: kafka-topics
 .PHONY: cdc-up cdc-seed cdc-register cdc-bridge
 .PHONY: spark-batch spark-streaming
 .PHONY: trino-bootstrap trino-shell
@@ -153,17 +153,6 @@ infra-status:                  ## Show container status
 
 infra-logs:                    ## Tail logs (usage: make infra-logs SVC=trino)
 	docker compose logs --tail=50 -f $(SVC)
-
-## Kafka
-kafka-topics:                  ## Create topics
-	docker compose run --rm topic-init
-
-kafka-publish:                 ## Publish events (default 5000)
-	docker compose run --rm \
-	  -e TOPIC="$${TOPIC:-taxi.trip.events.$$(date +%s)}" \
-	  -e MAX_EVENTS="$${MAX_EVENTS:-5000}" \
-	  -e INVALID_RATE="$${INVALID_RATE:-0.02}" \
-	  generator
 
 ## CDC
 cdc-up:                        ## Start Postgres + Debezium

@@ -129,21 +129,6 @@ services:
     command: ["python3", "/opt/project/scripts/create_per_run_topic.py", "kafka:9092", "${TOPIC_RUN:-taxi.trip.events}", "3"]
     restart: "no"
 
-  generator:
-    build:
-      context: .
-      dockerfile: docker/tools.Dockerfile
-    image: nyc-pipeline-tools:latest
-    container_name: nyc_generator
-    profiles: ["tools"]
-    depends_on:
-      - kafka
-    volumes:
-      - ./:/opt/project
-    working_dir: /opt/project
-    command: ["entrypoint-generator"]
-    restart: "no"
-
   quality-report:
     build:
       context: .

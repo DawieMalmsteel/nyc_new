@@ -1,5 +1,5 @@
 # nyc-pipeline-tools
-# One-shot CLI container for: topic-init, generator, quality-report.
+# One-shot CLI container for: topic-init, quality-report, CDC bridge/seed/register.
 # Mounted project lives at /opt/project (same convention as spark services).
 FROM python:3.11-slim
 
@@ -13,17 +13,15 @@ WORKDIR /opt/project
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
-COPY generator/requirements.txt /opt/project/generator/requirements.txt
-# CDC bridge/seed dependencies
-RUN pip install --no-cache-dir psycopg2-binary sqlalchemy
-RUN pip install --no-cache-dir -r /opt/project/generator/requirements.txt
 
+
+# CDC bridge/seed dependencies
+RUN pip install --no-cache-dir psycopg2-binary sqlalchemy kafka-python
 # k8s-style wait-for helper.
 COPY docker/wait-kafka.sh /usr/local/bin/wait-kafka
 RUN chmod +x /usr/local/bin/wait-kafka
 
 COPY docker/entrypoint-topic-init.sh     /usr/local/bin/entrypoint-topic-init
-COPY docker/entrypoint-generator.sh     /usr/local/bin/entrypoint-generator
 COPY docker/entrypoint-quality.sh        /usr/local/bin/entrypoint-quality
 COPY docker/entrypoint-trino-bootstrap.sh /usr/local/bin/entrypoint-trino-bootstrap
 COPY docker/entrypoint-cdc-bridge.sh      /usr/local/bin/entrypoint-cdc-bridge

@@ -9,8 +9,7 @@ Data layer dùng **MinIO S3** (s3a:// cho Spark, s3:// cho Trino).
 flowchart LR
     subgraph Ingest[" "]
         Batch["📦 Batch<br/>MinIO nyc-raw → Spark Batch"]
-        Stream["🔀 Streaming<br/>Kafka/CDC → taxi.trip.events<br/>→ Spark Streaming"]
-    end
+        Stream["🔀 Streaming<br/>CDC → taxi.trip.events<br/>→ Spark Streaming"]
     Ingest --> Minio[MinIO S3<br/>nyc-silver / nyc-quarantine]
     Minio --> Trino[Trino Hive]
     Trino --> Dbt[dbt<br/>15 models]
@@ -137,10 +136,9 @@ make trino-bootstrap   # Register Hive tables
 make dbt-build         # dbt models + tests
 ```
 
-#### Streaming (Kafka)
+#### Streaming (Spark)
 ```bash
-make kafka-publish     # Gửi 5000 events lên taxi.trip.events
-make spark-streaming   # Spark consumer: validate → MinIO S3
+make spark-streaming   # Spark consumer: đọc taxi.trip.events → validate → MinIO S3
 ```
 
 #### CDC (Debezium)
@@ -193,8 +191,6 @@ make verify-cdc        # Kiểm tra Postgres, Debezium, topic offsets
 | `infra-status` | `docker compose ps` |
 | `infra-logs SVC=name` | Tail logs |
 | `kafka-topics` | Tạo topics |
-| `kafka-publish` | Publish events (5000) |
-| `cdc-seed` | Seed Postgres (5000 rows) |
 | `cdc-register` | Register Debezium connector |
 | `cdc-bridge` | Bridge CDC → events |
 | `spark-batch MONTH=01` | Batch backfill (local[*]) |
@@ -240,10 +236,9 @@ flowchart TB
         BSpark -->|Invalid| BQ[(MinIO nyc-quarantine)]
     end
 
-    subgraph Stream["🔀 KAFKA STREAMING"]
+    subgraph Stream["🔀 SPARK STREAMING"]
         direction TB
-        SGen[Kafka Producer<br/>generator/] --> STopic[taxi.trip.events]
-        STopic --> SStream[Spark Streaming<br/>spark_stream_taxi_events.py]
+        STopic[taxi.trip.events<br/>3 partitions] --> SStream[Spark Streaming<br/>spark_stream_taxi_events.py]
         SStream --> BValid
         SStream --> BQ
     end
@@ -301,23 +296,19 @@ make k8s-pipeline    # Bao gồm spark-batch cho 3 tháng
 MONTH=03 make spark-batch
 ```
 
-### Kafka streaming path
+### Spark Streaming path
 
 ```mermaid
 flowchart LR
-    Gen[Kafka Producer<br/>generator/taxi_event_generator.py] -->|JSON events| T[taxi.trip.events<br/>3 partitions]
-    T --> SS[Spark Streaming<br/>jobs/spark_stream_taxi_events.py<br/>foreachBatch + availableNow]
+    T[taxi.trip.events<br/>3 partitions] --> SS[Spark Streaming<br/>jobs/spark_stream_taxi_events.py<br/>foreachBatch + availableNow]
     SS -->|Valid| S[(MinIO nyc-silver)]
     SS -->|Invalid| Q[(MinIO nyc-quarantine)]
 ```
 
-Chạy streaming:
+Spark Streaming consume từ `taxi.trip.events` — nguồn dữ liệu do CDC Bridge feed (xem phần CDC).
+Chạy streaming (Docker Compose):
 ```bash
-# Docker Compose (chưa có K8s job cho streaming)
 make spark-streaming
-
-# Gửi events trước:
-make kafka-publish
 ```
 
 ### CDC / Debezium path
@@ -341,7 +332,7 @@ Chi tiết luồng CDC:
 1. **cdc-seed**: Import 5000 rows từ parquet vào Postgres
 2. **Debezium**: Đọc WAL log → capture INSERT → gửi lên `nyc_cdc.public.trips` (dạng flat JSON, đã qua `ExtractNewRecordState`)
 3. **CDC Bridge**: Poll messages từ CDC topic → transform sang standard event format → ghi vào `taxi.trip.events`
-4. Event format đầu ra giống hệt Kafka Producer, Spark Streaming có thể consume từ cùng topic
+4. Event format chuẩn, Spark Streaming có thể consume từ `taxi.trip.events`
 
 Chạy CDC:
 ```bash
