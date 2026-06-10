@@ -115,6 +115,8 @@ k8s-pipeline:                  ## Run full pipeline: init → spark → trino �
 	@echo "=== 7/10 CDC bridge ==="
 	kubectl apply -f k8s/jobs/cdc-bridge.yaml -n nyc-taxi
 	kubectl wait --for=condition=complete job/cdc-bridge -n nyc-taxi --timeout=120s
+	@echo "=== 8/10 Verify ==="
+	$(MAKE) k8s-verify
 	@echo "=== Pipeline complete ==="
 
 k8s-status:                    ## Show pod status
@@ -126,9 +128,30 @@ k8s-logs:                      ## Tail logs (usage: make k8s-logs JOB=spark-batc
 k8s-verify:                    ## Verify row counts via Trino
 	kubectl delete job verify-mart -n nyc-taxi --ignore-not-found 2>/dev/null
 	kubectl apply -f k8s/jobs/verify-mart.yaml -n nyc-taxi 2>&1 | head -1
-	kubectl wait --for=condition=complete job/verify-mart -n nyc-taxi --timeout=30s 2>&1
+	kubectl wait --for=condition=complete job/verify-mart -n nyc-taxi --timeout=60s 2>&1
 	kubectl logs -n nyc-taxi job/verify-mart 2>&1
 	kubectl delete job verify-mart -n nyc-taxi --ignore-not-found 2>/dev/null
+
+k8s-clean:                    ## Clean MinIO data + delete jobs (fresh start)
+	@echo "=== Cleaning MinIO data ==="
+	-kubectl exec -n nyc-taxi deploy/minio -- sh -c '\
+	  mc alias set local http://localhost:9000 minio minio123 && \
+	  mc rm --recursive --force local/nyc-silver/ && \
+	  mc rm --recursive --force local/nyc-quarantine/' 2>/dev/null || true
+	@echo "=== Deleting jobs ==="
+	-kubectl delete job -n nyc-taxi --all 2>/dev/null; true
+	@echo "Done"
+
+k8s-verify-cdc:               ## Verify CDC pipeline (K8s mode)
+	@echo "=== Postgres count ==="
+	@kubectl exec -n nyc-taxi statefulset/postgres-cdc -- psql -U postgres -d nyc_taxi -c "SELECT count(*) FROM trips;" 2>/dev/null | grep -E '^ +[0-9]'
+	@echo "=== Debezium connector ==="
+k8s-verify-analytics:         ## Run 10 analytics SQL queries (K8s mode)
+	kubectl delete job verify-analytics -n nyc-taxi --ignore-not-found 2>/dev/null
+	kubectl apply -f k8s/jobs/verify-analytics.yaml -n nyc-taxi 2>&1 | head -1
+	kubectl wait --for=condition=complete job/verify-analytics -n nyc-taxi --timeout=120s 2>&1
+	kubectl logs -n nyc-taxi job/verify-analytics 2>&1
+	kubectl delete job verify-analytics -n nyc-taxi --ignore-not-found 2>/dev/null
 
 .PHONY: infra-up infra-up-all infra-down infra-status infra-logs
 .PHONY: kafka-topics
