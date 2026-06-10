@@ -5,17 +5,16 @@
 Pipeline xử lý dữ liệu taxi NYC TLC: batch + streaming trên **Kubernetes (kind)** hoặc **Docker Compose** cho dev.
 Data layer dùng **MinIO S3** (s3a:// cho Spark, s3:// cho Trino).
 
-```text
-┌─ BATCH ──────────────────────────────────────┐
-│  Raw Parquet → MinIO S3 → Spark Batch → S3   │
-└───────────────────────────────────────────────┘
-┌─ STREAMING ───────────────────────────────────┐
-│  Kafka Producer/CDC → taxi.trip.events topic  │
-│       → Spark Streaming → MinIO S3            │
-└───────────────────────────────────────────────┘
-                         │
-                         ▼
-              Trino ← MinIO S3 → dbt → Superset
+```mermaid
+flowchart LR
+    subgraph Ingest[" "]
+        Batch["📦 Batch<br/>Raw Parquet → Spark Batch"]
+        Stream["🔀 Streaming<br/>Kafka/CDC → Spark Streaming"]
+    end
+    Ingest --> Minio[MinIO S3]
+    Minio --> Trino[Trino Hive]
+    Trino --> Dbt[dbt<br/>15 models]
+    Dbt --> Superset[Superset<br/>dashboard]
 ```
 
 Hai deployment mode:
@@ -234,71 +233,67 @@ Tất cả output đều về MinIO S3, shared qua Trino → dbt → Superset.
 
 ### Tổng quan
 
-```text
-┌───────────── BATCH ─────────────────┐  ┌────────── STREAMING ──────────┐
-│                                     │  │                               │
-│  Raw Parquet (yellow_tripdata_*)    │  │  Kafka Producer (generator/)  │
-│          │                          │  │          │                    │
-│          ▼                          │  │          ▼                    │
-│  MinIO S3 (nyc-raw/)                │  │  taxi.trip.events topic       │
-│          │                          │  │          │                    │
-│          ▼                          │  │  ┌──────┴──────┐              │
-│  Spark Batch (local[*])             │  │  │             │              │
-│  spark_local_batch.py               │  │  ▼             ▼              │
-└──────────┤                          │  │ Spark    CDC Bridge ◄─────────┤
-           │                          │  │ Stream   (cdc_bridge.py)      │
-           │                          │  │          │                    │
-           ▼                          │  │          │                    │
-  ┌───────────────┐                  │  │          │                    │
-  │ Valid Invalid  │                  │  │          │                    │
-  └───┬───────┬───┘                  │  │          │                    │
-      │       │                      │  │  ┌───────┴──────────┐          │
-      ▼       ▼                      │  │  │  Debezium CDC    │          │
-  MinIO S3  MinIO S3                 │  │  │  (Postgres →     │          │
-  nyc-silver nyc-quarantine          │  │  │   Kafka topic)   │          │
-      │       │                      │  │  └───────┬──────────┘          │
-      └───┬───┘                      │  │          │                     │
-          │                          │  │   Postgres (cdc-seed)          │
-          ▼                          │  └──────────┼─────────────────────┘
-    ┌─────────┐                     │             │
-    │  Trino  │◄────────────────────┼─────────────┘
-    │ (Hive)  │                     │   (cả silver + quarantine từ S3)
-    └────┬────┘                     │
-         │                          │
-         ▼                          │
-    ┌─────────┐                     │
-    │  dbt    │  (15 models: staging → marts → gold)
-    └────┬────┘                     │
-         │                          │
-         ▼                          │
-    ┌───────────┐                   │
-    │ Superset  │  (7 datasets, dashboard)
-    └───────────┘                   │
-└───────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Batch["📦 BATCH"]
+        direction TB
+        BP[Raw Parquet<br/>yellow_tripdata_*] --> BMinio[MinIO nyc-raw]
+        BMinio --> BSpark[Spark Batch<br/>spark_local_batch.py]
+        BSpark -->|Valid| BValid[MinIO nyc-silver]
+        BSpark -->|Invalid| BInvalid[MinIO nyc-quarantine]
+    end
+
+    subgraph Streaming["🔀 STREAMING"]
+        direction TB
+        SKP[Kafka Producer<br/>generator/] --> STopic[taxi.trip.events]
+        STopic --> SSpark[Spark Streaming<br/>spark_stream_taxi_events.py]
+        SSpark --> BValid
+        SSpark --> BInvalid
+    end
+
+    subgraph CDC["🔄 CDC"]
+        direction TB
+        PG[Postgres<br/>cdc-seed] --> DBZ[Debezium Kafka Connect]
+        DBZ --> CT[nyc_cdc.public.trips]
+        CT --> CB[CDC Bridge<br/>cdc_bridge.py]
+        CB --> STopic
+    end
+
+    BValid --> Trino[Trino Hive]
+    BInvalid --> Trino
+    Trino --> Dbt[dbt<br/>15 models]
+    Dbt --> Superset[Superset<br/>7 datasets]
 ```
 
 ### Batch path
 
-```text
-Raw Parquet (yellow_tripdata_2024-*.parquet)
-    │
-    ▼
-MinIO S3 (nyc-raw/)
-    │
-    ▼
-Spark Batch (jobs/spark_local_batch.py)
-  ├── Enrichment: pickup_date, pickup_year, pickup_month, trip_duration, tip_rate
-  ├── Validation rules (giống cho cả batch & streaming):
-  │   ├── pickup_ts, dropoff_ts NOT NULL
-  │   ├── dropoff_ts > pickup_ts
-  │   ├── trip_distance > 0
-  │   ├── fare_amount >= 0, total_amount >= fare_amount
-  │   ├── passenger_count 1-6
-  │   ├── payment_type 1-6
-  │   └── location_id tồn tại trong zone lookup
-  │
-  ├── Valid   → MinIO S3 (nyc-silver/trips/) [partitioned by pickup_year, pickup_month]
-  └── Invalid → MinIO S3 (nyc-quarantine/invalid_trips/)
+```mermaid
+flowchart TB
+    Raw[Raw Parquet<br/>yellow_tripdata_2024-*.parquet] --> Minio[MinIO S3<br/>nyc-raw]
+    Minio --> Spark[Spark Batch<br/>jobs/spark_local_batch.py]
+
+    subgraph Enrich["Enrichment"]
+        direction TB
+        E1[pickup_date, pickup_year]
+        E2[pickup_month, trip_duration]
+        E3[tip_rate = tip / total]
+    end
+
+    subgraph Validate["Validation rules (batch & streaming)"]
+        V1[pickup_ts, dropoff_ts NOT NULL]
+        V2[dropoff_ts > pickup_ts]
+        V3[trip_distance > 0]
+        V4[fare_amount >= 0]
+        V5[total_amount >= fare_amount]
+        V6[passenger_count 1-6]
+        V7[payment_type 1-6]
+        V8[location_id tồn tại trong zone lookup]
+    end
+
+    Spark --> Enrich
+    Spark --> Validate
+    Validate -->|PASS| Silver[MinIO S3<br/>nyc-silver/trips/<br/>partitioned by pickup_year, pickup_month]
+    Validate -->|FAIL| Quarantine[MinIO S3<br/>nyc-quarantine/invalid_trips/]
 ```
 
 Chạy batch:
@@ -312,17 +307,12 @@ MONTH=03 make spark-batch
 
 ### Kafka streaming path
 
-```text
-Kafka Producer (generator/taxi_event_generator.py)
-  Đọc parquet, publish JSON events lên taxi.trip.events
-    │
-    ▼
-Spark Streaming (jobs/spark_stream_taxi_events.py)
-  foreachBatch, trigger availableNow
-  ├── Cùng validation rules như batch
-  │
-  ├── Valid   → MinIO S3 (nyc-silver/) append
-  └── Invalid → MinIO S3 (nyc-quarantine/) append
+```mermaid
+flowchart LR
+    Prod[Kafka Producer<br/>generator/taxi_event_generator.py] -->|JSON events| Topic[ taxi.trip.events<br/>Kafka topic]
+    Topic --> Stream[Spark Streaming<br/>jobs/spark_stream_taxi_events.py]
+    Stream -->|Valid| Silver[MinIO nyc-silver/]
+    Stream -->|Invalid| Quar[MinIO nyc-quarantine/]
 ```
 
 Chạy streaming:
@@ -335,27 +325,18 @@ make kafka-publish
 
 ### CDC / Debezium path
 
-```text
-Postgres (nyc_postgres)
-  ├── CDC seed: import 5000 rows từ parquet vào bảng trips
-  │     make cdc-seed
-  │
-  └── WAL logical replication ──► Debezium Kafka Connect
-                                    │
-                                    ▼
-                              Kafka topic: nyc_cdc.public.trips
-                                    │
-                                    ▼
-                              CDC Bridge (scripts/cdc_bridge.py)
-                                ├── Flat JSON envelope
-                                ├── Async producer (2,543 ev/s)
-                                ├── Sync mode (--sync, 9 ev/s)
-                                │
-                                ▼
-                              taxi.trip.events topic
-                                    │
-                                    ▼
-                              Spark Streaming (optional)
+```mermaid
+flowchart TB
+    PG[Postgres<br/>nyc_postgres] -->|CDC seed<br/>5000 rows từ parquet| Seed[make cdc-seed]
+    PG -->|WAL logical replication| DBZ[Debezium<br/>Kafka Connect 2.5]
+    DBZ --> CT[Kafka topic<br/>nyc_cdc.public.trips]
+    CT --> Bridge[CDC Bridge<br/>scripts/cdc_bridge.py]
+    Bridge -->|Async 2,543 ev/s| Topic[taxi.trip.events]
+    Bridge -->|Sync --sync 9 ev/s| Topic
+    Topic --> Stream[Spark Streaming<br/>(optional)]
+
+    style Seed fill:#f5f5f5,stroke-dasharray: 5 5
+    style Stream fill:#f5f5f5,stroke-dasharray: 5 5
 ```
 
 Chạy CDC:
