@@ -144,6 +144,10 @@ def main() -> None:
         .withColumn("pickup_year", year(col("pickup_ts")))
         .withColumn("pickup_month", month(col("pickup_ts")))
     )
+    # Generate trip_id matching the batch job convention
+    df = df.withColumn("trip_id",
+        expr("xxhash64(concat_ws('|', cast(pickup_ts as string), cast(pickup_location_id as string), cast(dropoff_location_id as string)))")
+    )
 
     df = (
         df.join(
@@ -188,6 +192,19 @@ def main() -> None:
         .withColumn("quarantine_ts", current_timestamp())
     )
 
+    silver_columns = [
+        "trip_id", "source_file",
+        "vendor_id", "pickup_ts", "dropoff_ts", "passenger_count", "trip_distance",
+        "rate_code_id", "pickup_location_id", "dropoff_location_id", "payment_type",
+        "fare_amount", "extra", "mta_tax", "tip_amount", "tolls_amount",
+        "improvement_surcharge", "total_amount",
+        "pickup_borough", "pickup_zone", "pickup_service_zone",
+        "dropoff_borough", "dropoff_zone", "dropoff_service_zone",
+        "pickup_year", "pickup_month",
+        "pickup_date", "pickup_hour",
+        "event_ts", "ingestion_ts",
+    ]
+
     def write_batch(batch_df, batch_id: int):
         _ = batch_id
         batch_df.persist()
@@ -196,13 +213,18 @@ def main() -> None:
         invalid_df = batch_df.filter(col("is_valid") == lit(False)).drop("is_valid")
 
         if not valid_df.rdd.isEmpty():
+            valid_count = valid_df.count()
+            print(f"[stream] valid events this batch: {valid_count}")
             (
-                valid_df.write.mode("append")
+                valid_df.select(silver_columns)
+                .write.mode("append")
                 .partitionBy("pickup_year", "pickup_month")
                 .parquet(args.silver_path)
             )
 
         if not invalid_df.rdd.isEmpty():
+            invalid_count = invalid_df.count()
+            print(f"[stream] invalid events this batch: {invalid_count}")
             invalid_df.write.mode("append").parquet(args.quarantine_path)
 
         batch_df.unpersist()
