@@ -27,6 +27,8 @@ spec:
         - local[*]
         - --packages
         - org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+        - --conf
+        - spark.jars.ivy=/opt/project/.ivy2
         - /opt/project/jobs/spark_local_batch.py
         - --input
         - s3a://nyc-raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet

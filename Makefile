@@ -124,8 +124,11 @@ k8s-logs:                      ## Tail logs (usage: make k8s-logs JOB=spark-batc
 	kubectl logs -n nyc-taxi job/$(JOB) --follow
 
 k8s-verify:                    ## Verify row counts via Trino
-	kubectl run -n nyc-taxi --rm -i temp --image=nyc-pipeline-tools:k8s --restart=Never \
-	  -- python3 scripts/verify_mart.py
+	kubectl delete job verify-mart -n nyc-taxi --ignore-not-found 2>/dev/null
+	kubectl apply -f k8s/jobs/verify-mart.yaml -n nyc-taxi 2>&1 | head -1
+	kubectl wait --for=condition=complete job/verify-mart -n nyc-taxi --timeout=30s 2>&1
+	kubectl logs -n nyc-taxi job/verify-mart 2>&1
+	kubectl delete job verify-mart -n nyc-taxi --ignore-not-found 2>/dev/null
 
 .PHONY: infra-up infra-up-all infra-down infra-status infra-logs
 .PHONY: kafka-topics

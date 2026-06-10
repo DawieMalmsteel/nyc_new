@@ -7,6 +7,14 @@ host = os.environ.get("TRINO_HOST", "localhost")
 port = int(os.environ.get("TRINO_PORT", "8083"))
 c = connect(host=host, port=port, user='analytics')
 cur = c.cursor()
-for tbl in ['dim_zone', 'fact_trips', 'fact_invalid_trips', 'mart_hourly_summary']:
-    cur.execute(f"SELECT COUNT(*) FROM hive.mart.{tbl}")
-    print(f'{tbl}: {cur.fetchone()[0]:>10,} rows')
+try:
+    cur.execute("SET SESSION query_max_run_time='30s'")
+except Exception:
+    pass  # optional session param
+for tbl in ['dim_zone', 'fact_trips', 'mart_hourly_summary', 'mart_revenue_by_day']:
+    try:
+        cur.execute(f"SELECT COUNT(*) FROM hive.mart.{tbl}")
+        row = cur.fetchone()
+        print(f'{tbl}: {row[0]:>10,} rows' if row else f'{tbl}: no result')
+    except Exception as e:
+        print(f'{tbl}: ERROR - {e}')

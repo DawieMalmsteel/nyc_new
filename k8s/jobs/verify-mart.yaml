@@ -1,0 +1,31 @@
+metadata:
+  namespace: nyc-taxi
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: verify-mart
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: verify
+        image: nyc-pipeline-tools:k8s
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TRINO_HOST
+          value: svc-trino
+        - name: TRINO_PORT
+          value: "8080"
+        command:
+        - python3
+        - /opt/project/scripts/verify_mart.py
+        volumeMounts:
+        - name: project-files
+          mountPath: /opt/project
+      volumes:
+      - name: project-files
+        persistentVolumeClaim:
+          claimName: project-files-pvc
