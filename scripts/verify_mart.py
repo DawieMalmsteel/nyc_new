@@ -8,7 +8,7 @@ port = int(os.environ.get("TRINO_PORT", "8083"))
 c = connect(host=host, port=port, user='analytics')
 cur = c.cursor()
 try:
-    cur.execute("SET SESSION query_max_run_time='30s'")
+    cur.execute("SET SESSION query_max_run_time='120s'")
 except Exception:
     pass  # optional session param
 for tbl in ['dim_zone', 'fact_trips', 'mart_hourly_summary', 'mart_revenue_by_day']:

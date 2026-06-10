@@ -16,7 +16,7 @@ RUN apt-get update \
 
 
 # CDC bridge/seed dependencies
-RUN pip install --no-cache-dir psycopg2-binary sqlalchemy kafka-python trino
+RUN pip install --no-cache-dir psycopg2-binary sqlalchemy kafka-python trino pandas pyarrow
 # k8s-style wait-for helper.
 COPY docker/wait-kafka.sh /usr/local/bin/wait-kafka
 RUN chmod +x /usr/local/bin/wait-kafka
