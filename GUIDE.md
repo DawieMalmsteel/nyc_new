@@ -386,19 +386,29 @@ Core images: `confluentinc/cp-kafka:7.6.1`, `confluentinc/cp-zookeeper:7.6.1`,
 
 ### Script trong Job dùng code cũ
 
-Các job (cdc-bridge, cdc-seed, trino-bootstrap, ...) mount project-files PVC:
+Các job (cdc-bridge, cdc-seed, trino-bootstrap, ...) mount project-files PVC và chạy script từ đó:
 ```yaml
 command: ["python3", "/opt/project/scripts/cdc_bridge.py"]
 ```
-Script chạy từ **PVC trên kind-worker** (`/mnt/nyc-project/`), **không phải từ container image**.
-Sau khi sửa script trong repo, cần sync lên kind-worker:
-```bash
-# Copy toàn bộ project lên kind-worker
-tar cf - scripts/ k8s/ | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
+**Script chạy từ PVC, không phải từ container image.** Khi sửa code trong repo, cần cập nhật
+lên PVC trước khi chạy job.
 
-# Hoặc chỉ một file
-cat scripts/cdc_bridge.py | docker exec -i kind-worker sh -c 'cat > /mnt/nyc-project/scripts/cdc_bridge.py'
+Cách sync K8s-native (dùng `kubectl cp`):
+```bash
+# Tạo pod tạm với PVC mount, copy file vào
+kubectl run -n nyc-taxi --rm -i sync --image=busybox:1.36 --restart=Never \
+  -- sh -c 'cat > /opt/project/scripts/cdc_bridge.py' < scripts/cdc_bridge.py
+
+# Hoặc copy nhiều file
+tar cf - scripts/ k8s/ | kubectl run -n nyc-taxi --rm -i sync --image=busybox:1.36 \
+  --restart=Never -- sh -c 'tar xf - -C /opt/project'
 ```
+
+> **Kind + hostPath PVC**: `kubectl cp` hoạt động giống hệt trên mọi K8s cluster
+> (kind, EKS, GKE, AKS...). Không dùng `docker exec` — lệnh đó chỉ chạy được trên kind.
+
+Cách dài hạn: build lại image (`nyc-pipeline-tools`) với script mới, push lên container registry
+(ECR, Docker Hub), update `imagePullPolicy: Always`.
 
 ### Job không chạy được (immutable spec)
 
