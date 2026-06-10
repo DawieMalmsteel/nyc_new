@@ -8,10 +8,10 @@ Data layer dùng **MinIO S3** (s3a:// cho Spark, s3:// cho Trino).
 ```mermaid
 flowchart LR
     subgraph Ingest[" "]
-        Batch["📦 Batch<br/>Raw Parquet → Spark Batch"]
-        Stream["🔀 Streaming<br/>Kafka/CDC → Spark Streaming"]
+        Batch["📦 Batch<br/>MinIO nyc-raw → Spark Batch"]
+        Stream["🔀 Streaming<br/>Kafka/CDC → taxi.trip.events<br/>→ Spark Streaming"]
     end
-    Ingest --> Minio[MinIO S3]
+    Ingest --> Minio[MinIO S3<br/>nyc-silver / nyc-quarantine]
     Minio --> Trino[Trino Hive]
     Trino --> Dbt[dbt<br/>15 models]
     Dbt --> Superset[Superset<br/>dashboard]
@@ -228,68 +228,68 @@ Credentials: `minio` / `minio123` (hardcoded ở Spark config, Trino catalog, v�
 ## Data Flow Chi Tiết
 
 Pipeline có 3 đường ingestion: **batch**, **Kafka streaming**, và **CDC streaming**.
-Tất cả output đều về MinIO S3, shared qua Trino → dbt → Superset.
-
-### Tổng quan
+Tất cả output đều về cùng MinIO S3 buckets, shared qua Trino → dbt → Superset.
 
 ```mermaid
 flowchart TB
     subgraph Batch["📦 BATCH"]
         direction TB
-        BMinio[MinIO nyc-raw<br/>minio-setup uploads parquet here] --> BSpark[Spark Batch<br/>spark_local_batch.py]
-        BSpark -->|Valid| BValid[MinIO nyc-silver]
-        BSpark -->|Invalid| BInvalid[MinIO nyc-quarantine]
+        BSetup[("minio-setup<br/>upload raw parquet")] -.-> BMinio[(MinIO nyc-raw)]
+        BMinio --> BSpark[Spark Batch<br/>spark_local_batch.py]
+        BSpark -->|Valid| BValid[(MinIO nyc-silver)]
+        BSpark -->|Invalid| BQ[(MinIO nyc-quarantine)]
     end
 
-    subgraph Streaming["🔀 STREAMING"]
+    subgraph Stream["🔀 KAFKA STREAMING"]
         direction TB
-        SKP[Kafka Producer<br/>generator/] --> STopic[taxi.trip.events]
-        STopic --> SSpark[Spark Streaming<br/>spark_stream_taxi_events.py]
-        SSpark --> BValid
-        SSpark --> BInvalid
+        SGen[Kafka Producer<br/>generator/] --> STopic[taxi.trip.events]
+        STopic --> SStream[Spark Streaming<br/>spark_stream_taxi_events.py]
+        SStream --> BValid
+        SStream --> BQ
     end
 
-    subgraph CDC["🔄 CDC"]
+    subgraph CDC["🔄 CDC (DEBEZIUM)"]
         direction TB
-        PG[Postgres<br/>cdc-seed] --> DBZ[Debezium Kafka Connect]
-        DBZ --> CT[nyc_cdc.public.trips]
-        CT --> CB[CDC Bridge<br/>cdc_bridge.py]
-        CB --> STopic
+        CSeed[cdc-seed] --> CPG[(Postgres<br/>nyc_taxi)]
+        CPG -->|WAL logical replication| CDBZ[Debezium<br/>Kafka Connect]
+        CDBZ --> CCT[nyc_cdc.public.trips]
+        CCT --> CBridge[CDC Bridge<br/>cdc_bridge.py]
+        CBridge --> STopic
     end
 
     BValid --> Trino[Trino Hive]
-    BInvalid --> Trino
-    Trino --> Dbt[dbt<br/>15 models]
-    Dbt --> Superset[Superset<br/>7 datasets]
+    BQ --> Trino
+    Trino --> D[dbt<br/>15 models]
+    D --> S[Superset<br/>7 datasets]
 ```
 
 ### Batch path
 
 ```mermaid
-flowchart TB
-    Minio[MinIO S3<br/>nyc-raw<br/>đã upload bởi minio-setup] --> Spark[Spark Batch<br/>jobs/spark_local_batch.py<br/>đọc s3a://nyc-raw/...]
-    subgraph Enrich["Enrichment"]
-        direction TB
-        E1[pickup_date, pickup_year]
-        E2[pickup_month, trip_duration]
-        E3[tip_rate = tip / total]
+flowchart LR
+    subgraph Input["Input"]
+        M[(MinIO nyc-raw<br/>parquet files)]
     end
-
-    subgraph Validate["Validation rules (batch & streaming)"]
-        V1[pickup_ts, dropoff_ts NOT NULL]
-        V2[dropoff_ts > pickup_ts]
-        V3[trip_distance > 0]
-        V4[fare_amount >= 0]
-        V5[total_amount >= fare_amount]
-        V6[passenger_count 1-6]
-        V7[payment_type 1-6]
-        V8[location_id tồn tại trong zone lookup]
+    subgraph Process["Spark Batch (spark_local_batch.py)"]
+        Read[Đọc s3a://nyc-raw/...] --> Enrich[Enrichment<br/>pickup_date, pickup_year<br/>pickup_month, trip_duration<br/>tip_rate = tip / total]
+        Enrich --> Validate[Validation]
+        Validate --> Route{Pass?}
     end
+    Input --> Process
+    Route -->|Yes| Silver[(MinIO nyc-silver<br/>partitioned by<br/>pickup_year/month)]
+    Route -->|No| Quar[(MinIO nyc-quarantine)]
+```
 
-    Spark --> Enrich
-    Spark --> Validate
-    Validate -->|PASS| Silver[MinIO S3<br/>nyc-silver/trips/<br/>partitioned by pickup_year, pickup_month]
-    Validate -->|FAIL| Quarantine[MinIO S3<br/>nyc-quarantine/invalid_trips/]
+**Validation rules** (giống cho cả batch & streaming):
+
+```text
+- pickup_ts, dropoff_ts NOT NULL
+- dropoff_ts > pickup_ts
+- trip_distance > 0
+- fare_amount >= 0, total_amount >= fare_amount
+- passenger_count 1-6
+- payment_type 1-6
+- location_id tồn tại trong zone lookup
 ```
 
 Chạy batch:
@@ -305,34 +305,43 @@ MONTH=03 make spark-batch
 
 ```mermaid
 flowchart LR
-    Prod[Kafka Producer<br/>generator/taxi_event_generator.py] -->|JSON events| Topic[ taxi.trip.events<br/>Kafka topic]
-    Topic --> Stream[Spark Streaming<br/>jobs/spark_stream_taxi_events.py]
-    Stream -->|Valid| Silver[MinIO nyc-silver/]
-    Stream -->|Invalid| Quar[MinIO nyc-quarantine/]
+    Gen[Kafka Producer<br/>generator/taxi_event_generator.py] -->|JSON events| T[taxi.trip.events<br/>3 partitions]
+    T --> SS[Spark Streaming<br/>jobs/spark_stream_taxi_events.py<br/>foreachBatch + availableNow]
+    SS -->|Valid| S[(MinIO nyc-silver)]
+    SS -->|Invalid| Q[(MinIO nyc-quarantine)]
 ```
 
 Chạy streaming:
 ```bash
 # Docker Compose (chưa có K8s job cho streaming)
 make spark-streaming
-# Hoặc gửi events trước:
+
+# Gửi events trước:
 make kafka-publish
 ```
 
 ### CDC / Debezium path
 
 ```mermaid
-flowchart TB
-    PG[Postgres<br/>nyc_postgres] -->|CDC seed<br/>5000 rows từ parquet| Seed[make cdc-seed]
+flowchart LR
+    Seed[cdc-seed] -->|insert 5000 rows| PG[(Postgres<br/>nyc_taxi)]
     PG -->|WAL logical replication| DBZ[Debezium<br/>Kafka Connect 2.5]
-    DBZ --> CT[Kafka topic<br/>nyc_cdc.public.trips]
-    CT --> Bridge[CDC Bridge<br/>scripts/cdc_bridge.py<br/>consume all + idle timeout]
-    Bridge -->|Async ~330 ev/s| Topic[taxi.trip.events]
-    Bridge -->|Sync --sync 9 ev/s| Topic
-    Topic --> Stream[Spark Streaming<br/>(cần K8s job)]
-    style Seed fill:#f5f5f5,stroke-dasharray: 5 5
-    style Stream fill:#f5f5f5,stroke-dasharray: 5 5
+    DBZ -->|CDC topic| CCT[nyc_cdc.public.trips]
+    CCT -->|poll + transform| Bridge[CDC Bridge<br/>cdc_bridge.py]
+    Bridge -->|async ~330 ev/s| TE[taxi.trip.events]
+    TE -->|optional| SS[Spark Streaming]
+    Bridge -.->|sync --sync<br/>~9 ev/s| TE
+
+    style Seed fill:#eee,stroke-dasharray:5 5
+    style SS fill:#eee,stroke-dasharray:5 5
 ```
+
+Chi tiết luồng CDC:
+
+1. **cdc-seed**: Import 5000 rows từ parquet vào Postgres
+2. **Debezium**: Đọc WAL log → capture INSERT → gửi lên `nyc_cdc.public.trips` (dạng flat JSON, đã qua `ExtractNewRecordState`)
+3. **CDC Bridge**: Poll messages từ CDC topic → transform sang standard event format → ghi vào `taxi.trip.events`
+4. Event format đầu ra giống hệt Kafka Producer, Spark Streaming có thể consume từ cùng topic
 
 Chạy CDC:
 ```bash
@@ -343,7 +352,7 @@ make cdc-bridge        # Bridge CDC → taxi.trip.events (tự động dừng sa
 # Verify
 make verify-cdc        # Check Postgres rows, Debezium status, topic offsets
 
-# Debug thủ công
+# Debug: xem event từ taxi.trip.events
 kubectl exec -n nyc-taxi kafka-0 -- sh -c \
   'kafka-console-consumer --bootstrap-server localhost:9092 --topic taxi.trip.events --max-messages 1 --from-beginning --timeout-ms 5000'
 ```
@@ -352,6 +361,14 @@ kubectl exec -n nyc-taxi kafka-0 -- sh -c \
 > Thông lượng async ~330 ev/s, sync ~9 ev/s.
 
 ### Hợp lưu
+
+```mermaid
+flowchart LR
+    B[(MinIO nyc-silver)] --> T[Trino Hive]
+    Q[(MinIO nyc-quarantine)] --> T
+    T --> D[dbt]
+    D --> S[Superset]
+```
 
 Cả 3 đường (batch, Kafka streaming, CDC) đều ghi vào cùng MinIO S3 buckets (`nyc-silver/`, `nyc-quarantine/`).
 Trino đọc từ S3 → dbt transform → Superset dashboard.
@@ -395,17 +412,16 @@ lên PVC trước khi chạy job.
 
 Cách sync K8s-native (dùng `kubectl cp`):
 ```bash
-# Tạo pod tạm với PVC mount, copy file vào
-kubectl run -n nyc-taxi --rm -i sync --image=busybox:1.36 --restart=Never \
-  -- sh -c 'cat > /opt/project/scripts/cdc_bridge.py' < scripts/cdc_bridge.py
-
-# Hoặc copy nhiều file
+# Copy toàn bộ project lên PVC
 tar cf - scripts/ k8s/ | kubectl run -n nyc-taxi --rm -i sync --image=busybox:1.36 \
   --restart=Never -- sh -c 'tar xf - -C /opt/project'
+
+# Hoặc chỉ một file
+cat scripts/cdc_bridge.py | kubectl run -n nyc-taxi --rm -i sync --image=busybox:1.36 \
+  --restart=Never -- sh -c 'cat > /opt/project/scripts/cdc_bridge.py'
 ```
 
-> **Kind + hostPath PVC**: `kubectl cp` hoạt động giống hệt trên mọi K8s cluster
-> (kind, EKS, GKE, AKS...). Không dùng `docker exec` — lệnh đó chỉ chạy được trên kind.
+> `kubectl cp` hoạt động trên mọi K8s cluster (kind, EKS, GKE, AKS...).
 
 Cách dài hạn: build lại image (`nyc-pipeline-tools`) với script mới, push lên container registry
 (ECR, Docker Hub), update `imagePullPolicy: Always`.
