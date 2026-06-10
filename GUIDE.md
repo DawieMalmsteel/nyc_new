@@ -237,8 +237,7 @@ Tất cả output đều về MinIO S3, shared qua Trino → dbt → Superset.
 flowchart TB
     subgraph Batch["📦 BATCH"]
         direction TB
-        BP[Raw Parquet<br/>yellow_tripdata_*] --> BMinio[MinIO nyc-raw]
-        BMinio --> BSpark[Spark Batch<br/>spark_local_batch.py]
+        BMinio[MinIO nyc-raw<br/>minio-setup uploads parquet here] --> BSpark[Spark Batch<br/>spark_local_batch.py]
         BSpark -->|Valid| BValid[MinIO nyc-silver]
         BSpark -->|Invalid| BInvalid[MinIO nyc-quarantine]
     end
@@ -269,9 +268,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    Raw[Raw Parquet<br/>yellow_tripdata_2024-*.parquet] --> Minio[MinIO S3<br/>nyc-raw]
-    Minio --> Spark[Spark Batch<br/>jobs/spark_local_batch.py]
-
+    Minio[MinIO S3<br/>nyc-raw<br/>đã upload bởi minio-setup] --> Spark[Spark Batch<br/>jobs/spark_local_batch.py<br/>đọc s3a://nyc-raw/...]
     subgraph Enrich["Enrichment"]
         direction TB
         E1[pickup_date, pickup_year]
