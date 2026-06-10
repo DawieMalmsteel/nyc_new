@@ -74,8 +74,7 @@ make k8s-pipeline
 6. **Spark batch** — 3 tháng (01, 02, 03/2024): enrichment + validation → silver/quarantine
 7. **Trino bootstrap** — register Hive tables từ S3
 8. **dbt build** — 15 models + 9 tests (expect 24/24 PASS)
-9. **CDC bridge** — CDC topic → `taxi.trip.events` format (async, 2,543 ev/s)
-10. Verify tự động
+9. **CDC bridge** — CDC topic → `taxi.trip.events` format (async, idle timeout 5s, ~330 ev/s)
 
 Thời gian: ~15-25 phút (Spark batch là bước nặng nhất).
 
@@ -327,11 +326,10 @@ flowchart TB
     PG[Postgres<br/>nyc_postgres] -->|CDC seed<br/>5000 rows từ parquet| Seed[make cdc-seed]
     PG -->|WAL logical replication| DBZ[Debezium<br/>Kafka Connect 2.5]
     DBZ --> CT[Kafka topic<br/>nyc_cdc.public.trips]
-    CT --> Bridge[CDC Bridge<br/>scripts/cdc_bridge.py]
-    Bridge -->|Async 2,543 ev/s| Topic[taxi.trip.events]
+    CT --> Bridge[CDC Bridge<br/>scripts/cdc_bridge.py<br/>consume all + idle timeout]
+    Bridge -->|Async ~330 ev/s| Topic[taxi.trip.events]
     Bridge -->|Sync --sync 9 ev/s| Topic
-    Topic --> Stream[Spark Streaming<br/>(optional)]
-
+    Topic --> Stream[Spark Streaming<br/>(cần K8s job)]
     style Seed fill:#f5f5f5,stroke-dasharray: 5 5
     style Stream fill:#f5f5f5,stroke-dasharray: 5 5
 ```
@@ -340,11 +338,18 @@ Chạy CDC:
 ```bash
 make cdc-seed          # Seed Postgres (5000 rows)
 make cdc-register      # Register Debezium connector
-make cdc-bridge        # Bridge CDC → taxi.trip.events
+make cdc-bridge        # Bridge CDC → taxi.trip.events (tự động dừng sau 5s idle)
 
 # Verify
 make verify-cdc        # Check Postgres rows, Debezium status, topic offsets
+
+# Debug thủ công
+kubectl exec -n nyc-taxi kafka-0 -- sh -c \
+  'kafka-console-consumer --bootstrap-server localhost:9092 --topic taxi.trip.events --max-messages 1 --from-beginning --timeout-ms 5000'
 ```
+
+> **CDC bridge**: Dùng `--max-events 0` để xử lý tất cả messages, tự động thoát sau 5 giây không có message mới (idle timeout).
+> Thông lượng async ~330 ev/s, sync ~9 ev/s.
 
 ### Hợp lưu
 
@@ -378,6 +383,22 @@ Core images: `confluentinc/cp-kafka:7.6.1`, `confluentinc/cp-zookeeper:7.6.1`,
 `minio/minio:latest`, `apache/spark:3.5.1`, `trinodb/trino:435`,
 `apache/superset:4.0.0`, `postgres:16-alpine`, `debezium/connect:2.5`,
 `busybox:1.36`.
+
+### Script trong Job dùng code cũ
+
+Các job (cdc-bridge, cdc-seed, trino-bootstrap, ...) mount project-files PVC:
+```yaml
+command: ["python3", "/opt/project/scripts/cdc_bridge.py"]
+```
+Script chạy từ **PVC trên kind-worker** (`/mnt/nyc-project/`), **không phải từ container image**.
+Sau khi sửa script trong repo, cần sync lên kind-worker:
+```bash
+# Copy toàn bộ project lên kind-worker
+tar cf - scripts/ k8s/ | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
+
+# Hoặc chỉ một file
+cat scripts/cdc_bridge.py | docker exec -i kind-worker sh -c 'cat > /mnt/nyc-project/scripts/cdc_bridge.py'
+```
 
 ### Job không chạy được (immutable spec)
 
