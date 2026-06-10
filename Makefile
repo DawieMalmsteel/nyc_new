@@ -47,9 +47,8 @@ k8s-deploy:                     ## Deploy all K8s manifests (ordered)
 	kubectl apply -f k8s/superset/
 	kubectl apply -f k8s/airflow/postgres/
 	kubectl apply -f k8s/airflow/
-	kubectl apply -n nyc-taxi -f k8s/dbt/
-	kubectl apply -n nyc-taxi -f k8s/jobs/
-
+	kubectl apply -f k8s/airflow/scheduler/
+	kubectl apply -f k8s/airflow/webserver/
 k8s-start:                      ## Start: cluster → images → services → UIs
 	@if ! kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
 		echo "=== Creating kind cluster ==="; \
@@ -126,22 +125,8 @@ k8s-logs:                      ## Tail logs (usage: make k8s-logs JOB=spark-batc
 
 k8s-verify:                    ## Verify row counts via Trino
 	kubectl run -n nyc-taxi --rm -i temp --image=nyc-pipeline-tools:k8s --restart=Never \
-	  -- python3 -c "
-from trino.dbapi import connect
-c = connect('svc-trino', 8080, user='test').cursor()
-for q in [
-    ('trips', 'SELECT count(*) FROM hive.nyc.trips'),
-    ('fact_trips', 'SELECT count(*) FROM hive.mart.fact_trips'),
-    ('dim_zone', 'SELECT count(*) FROM hive.mart.dim_zone'),
-    ('mart_revenue_by_day', 'SELECT count(*) FROM hive.mart.mart_revenue_by_day'),
-]:
-    c.execute(q[1])
-    print(f'{q[0]}: {c.fetchone()[0]}')
-"
+	  -- python3 scripts/verify_mart.py
 
-# ──────────────────────────────────────────────
-# II. Docker Compose — Local dev alternative
-# ──────────────────────────────────────────────
 .PHONY: infra-up infra-up-all infra-down infra-status infra-logs
 .PHONY: kafka-topics kafka-publish
 .PHONY: cdc-up cdc-seed cdc-register cdc-bridge
