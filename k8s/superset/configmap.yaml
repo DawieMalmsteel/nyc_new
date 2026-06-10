@@ -1,3 +1,6 @@
+metadata:
+  namespace: nyc-taxi
+
 apiVersion: v1
 kind: ConfigMap
 metadata:

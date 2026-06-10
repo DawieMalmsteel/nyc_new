@@ -1,302 +1,39 @@
 # Makefile — NYC Taxi Pipeline
 # ============================
-# Chia nhóm: infra | kafka | spark | trino | dbt | superset | airflow | verify | clean
-#
-# Profiles Docker:
-#   default   → ZK, Kafka, Kafka-UI, MinIO, Spark Master/Worker
-#   tools     → topic-init, generator, quality-report, trino-bootstrap
-#   trino     → Trino coordinator
-#   dbt       → dbt runner
-#   superset  → Superset webserver
-#   airflow   → Airflow postgres/webserver/scheduler
+# Mặc định chạy trên Kubernetes (kind). Docker Compose vẫn hỗ trợ cho local dev.
 #
 # Usage:
-#   make infra-up            # Start core services
-#   make infra-up-all        # Start everything
-#   make spark-batch         # Batch backfill (fast, no Kafka)
-#   make dbt-build           # dbt models + tests
-#   make verify-all          # Full pipeline verification
+#   make k8s-start            # Start everything (cluster + services + UIs)
+#   make k8s-pipeline         # Run full data pipeline
+#   make k8s-stop             # Scale down all services
+#   make k8s-destroy          # Delete cluster (volumes + images)
+#   make k8s-ui               # Start port-forwards for all UIs
 
 SHELL := /bin/bash
 
-# ──────────────────────────────────────────────
-# I. Infrastructure
-# ──────────────────────────────────────────────
-.PHONY: infra-up infra-up-all infra-down infra-down-all infra-status infra-logs
-
-infra-up:                       ## Start core services (ZK, Kafka, MinIO, Spark)
-	docker compose up -d zookeeper kafka kafka-ui minio spark-master spark-worker
-
-infra-up-all:                   ## Start everything (core + Trino + dbt + Superset + Airflow)
-	docker compose --profile tools --profile trino --profile dbt --profile superset --profile airflow up -d
-
-infra-down:                     ## Stop services (keep volumes)
-	docker compose down
-
-infra-down-all:                 ## Stop services + wipe volumes
-	docker compose down -v
-
-infra-status:                   ## Show container status
-	docker compose ps
-
-infra-logs:                     ## Tail logs (usage: make infra-logs SVC=trino)
-	docker compose logs --tail=50 -f $(SVC)
-
-# ──────────────────────────────────────────────
-# II. Kafka
-# ──────────────────────────────────────────────
-.PHONY: kafka-topics kafka-publish kafka-publish-full
-
-kafka-topics:                   ## Create topics (taxi.trip.events, .invalid, .dlq)
-	docker compose run --rm topic-init
-
-kafka-publish:                  ## Publish events to Kafka (default 5000 events)
-	docker compose run --rm \
-	  -e TOPIC="$${TOPIC:-taxi.trip.events.$$(date +%s)}" \
-	  -e MAX_EVENTS="$${MAX_EVENTS:-5000}" \
-	  -e INVALID_RATE="$${INVALID_RATE:-0.02}" \
-	  generator
-
-kafka-publish-full:             ## Publish ALL 9.5M events (takes hours)
-	MAX_EVENTS=-1 INVALID_RATE=0.01 $(MAKE) kafka-publish
-
-# ──────────────────────────────────────────────
-
-# ──────────────────────────────────────────────
-# CDC. Debezium (Postgres → Kafka → events)
-# ──────────────────────────────────────────────
-.PHONY: cdc-up cdc-seed cdc-register cdc-bridge cdc-verify
-
-cdc-up:                         ## Start Postgres + Debezium
-	docker compose --profile tools up -d nyc_postgres debezium
-
-cdc-seed:                        ## Seed Postgres trips table from parquet (5000 rows)
-	docker compose --profile tools run --rm cdc-seed
-
-cdc-seed-full:                   ## Seed Postgres with 50K rows
-	docker compose --profile tools run --rm cdc-seed \
-	  --input /opt/project/data/raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet \
-	  --max-rows 50000
-
-cdc-register:                    ## Register Debezium Postgres connector
-	docker compose --profile tools run --rm cdc-register
-
-cdc-bridge:                      ## Run CDC bridge: Debezium topic → taxi.trip.events
-	docker compose --profile tools run --rm cdc-bridge
-
-cdc-verify:                      ## CDC E2E: seed → register → bridge → verify
-	$(MAKE) cdc-seed
-	@echo "=== 2/4 Register connector ==="
-	$(MAKE) cdc-register
-	@echo "=== 3/4 Bridge (500 events) ==="
-	docker compose --profile tools run --rm cdc-bridge --max-events 500
-	@echo "=== 4/4 Verify via Spark batch (optional, run make verify-all after) ==="
-
-cdc-bridge-bench:                ## Benchmark CDC bridge: seed → register → bridge (async, 500 ev)
-	@echo "=== 1/3 Seed ==="
-	$(MAKE) cdc-seed
-	@echo "=== 2/3 Register connector ==="
-	$(MAKE) cdc-register
-	@echo "=== 3/3 Bridge benchmark (async, 500 events) ==="
-	docker compose --profile tools run --rm cdc-bridge --max-events 500 --flush-interval 100
-
-cdc-bridge-bench-sync:           ## Benchmark CDC bridge: compare sync .get() mode (500 ev)
-	@echo "=== 1/3 Seed ==="
-	$(MAKE) cdc-seed
-	@echo "=== 2/3 Register connector ==="
-	$(MAKE) cdc-register
-	@echo "=== 3/3 Bridge benchmark (sync .get() mode, 500 events) ==="
-	docker compose --profile tools run --rm cdc-bridge --max-events 500 --sync
-
-# ──────────────────────────────────────────────
-# III. Spark
-spark-batch:                      ## Batch backfill via MinIO S3 (needs: MinIO + Kafka up first)
-	docker run --rm \
-	  --network "nyc_new_default" \
-	  -v "$(PWD):/opt/project" \
-	  -w /opt/project \
-	  -e HOME=/tmp \
-	  --entrypoint /opt/spark/bin/spark-submit \
-	  apache/spark:3.5.1 \
-	  --master local[*] \
-	  --packages "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262" \
-	  --conf spark.jars.ivy=/tmp/.ivy2 \
-	  /opt/project/jobs/spark_local_batch.py \
-	  --input "s3a://nyc-raw/yellow_taxi/year=2024/month=$${MONTH:-01}/yellow_tripdata_2024-$${MONTH:-01}.parquet" \
-	  --lookup "s3a://nyc-lookup/taxi_zone_lookup.csv"
-
-spark-streaming: infra-up        ## Submit streaming job reading/writing MinIO S3
-	TOPIC="$${TOPIC:-taxi.trip.events}" \
-	  bash scripts/start_streaming_job_docker.sh
-
-cdc-streaming:                   ## Full CDC → Spark streaming E2E: seed → register → bridge → process
-	$(MAKE) cdc-seed
-	@echo "=== 2/4 Register connector ==="
-	$(MAKE) cdc-register
-	@echo "=== 3/4 Bridge ==="
-	docker compose --profile tools run --rm cdc-bridge --max-events 500 --flush-interval 100
-	@echo "=== 4/4 Spark streaming (trigger-available-now) ==="
-	TOPIC="$${TOPIC:-taxi.trip.events}" \
-	  CHECKPOINT_ROOT="/opt/project/data/checkpoints/spark_stream_taxi_events_docker_cdc" \
-	  bash scripts/start_streaming_job_docker.sh
-
-# ──────────────────────────────────────────────
-# IV. Trino
-# ──────────────────────────────────────────────
-.PHONY: trino-bootstrap trino-shell
-
-trino-bootstrap:                ## Register tables (trips, invalid_trips) from silver parquet
-	docker compose --profile tools --profile trino run --rm trino-bootstrap
-
-trino-shell:                    ## Interactive Trino shell
-	@docker exec -it nyc_trino trino --user analytics
-
-# ──────────────────────────────────────────────
-# V. dbt
-# ──────────────────────────────────────────────
-.PHONY: dbt-build dbt-run dbt-test dbt-debug
-
-dbt-build:                      ## Full dbt build: models + tests
-	docker compose --profile tools --profile dbt run --rm dbt dbt build
-
-dbt-run:                        ## Run models only (skip tests)
-	docker compose --profile tools --profile dbt run --rm dbt dbt run
-
-dbt-test:                       ## Run tests only
-	docker compose --profile tools --profile dbt run --rm dbt dbt test
-
-dbt-debug:                      ## dbt build with debug output
-	docker compose --profile tools --profile dbt run --rm dbt dbt build --debug
-
-# ──────────────────────────────────────────────
-# VI. Superset
-# ──────────────────────────────────────────────
-.PHONY: superset-bootstrap superset-check superset-open
-
-superset-bootstrap:             ## Register DB, dataset, 4 charts, dashboard (idempotent)
-	docker exec -i nyc_superset python3 < scripts/superset_bootstrap.py
-
-superset-check:                 ## List Superset resources
-	docker exec -i nyc_superset python3 < scripts/superset_check.py
-
-superset-open:                  ## Open Superset UI
-	@echo "Open http://localhost:8088  (admin/admin) -> dashboard 'NYC Taxi Overview'"
-
-# ──────────────────────────────────────────────
-# VII. Airflow
-# ──────────────────────────────────────────────
-.PHONY: airflow-up airflow-dags airflow-trigger airflow-test-task airflow-open
-
-airflow-up:                     ## Start Airflow (requires infra-up first)
-	docker compose --profile airflow up -d
-
-airflow-dags:                   ## List DAGs
-	@docker exec nyc_airflow_webserver airflow dags list 2>/dev/null || echo "Airflow not ready, try: make infra-up-all"
-
-airflow-trigger:                ## Trigger a DAG (usage: make airflow-trigger DAG=nyc_analytics_refresh)
-	@docker exec nyc_airflow_webserver airflow dags trigger $(DAG)
-
-airflow-test-task:              ## Test a single task (usage: make airflow-test-task DAG=nyc_e2e_pipeline TASK=dbt_build)
-	@docker exec nyc_airflow_webserver airflow tasks test $(DAG) $(TASK) $$(date +%Y-%m-%d)
-
-airflow-open:                   ## Open Airflow UI
-	@echo "Open http://localhost:8080  (admin/admin)"
-
-# ──────────────────────────────────────────────
-# VIII. Verify
-# ──────────────────────────────────────────────
-.PHONY: verify-mart verify-analytics verify-e2e verify-cdc verify-all
-
-verify-mart:                    ## Row counts of all mart tables in Trino
-	python3 scripts/verify_mart.py
-
-verify-analytics:               ## Run 10 analytics SQL questions (expect PASS 10/10)
-	python3 scripts/run_analytics_questions.py
-
-verify-e2e:                     ## Full Kafka E2E test (~1000 events)
-	MAX_EVENTS=5000 bash scripts/local_e2e_test.sh
-
-verify-e2e-full:                ## Full 9.5M E2E test (resource heavy, long running)
-	bash scripts/local_e2e_full_9_5m.sh
-
-verify-cdc:                      ## Verify CDC: Postgres, Debezium connector, topics
-	@echo "=== 1/4 Postgres ==="
-	@docker compose exec -T nyc_postgres psql -U postgres -d nyc_taxi -c "SELECT count(*) as trips_count FROM trips;" 2>/dev/null
-	@echo "=== 2/4 Debezium connector ==="
-	@curl -sf http://localhost:8084/connectors/nyc-postgres-connector/status 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); s=d['connector']['state']; print(f'Connector: {d[\"name\"]} — State: {s}'); sys.exit(0 if s=='RUNNING' else 1)" || echo "FAILED: Debezium connector not found"
-	@echo "=== 3/4 CDC topic ==="
-	@docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --bootstrap-server kafka:9092 --topic nyc_cdc.public.trips --time -1 2>/dev/null | cut -d: -f3 | xargs -I{} echo "CDC topic: {} messages available" || echo "CDC topic: has messages"
-	@echo "=== 4/4 Bridge output topic ==="
-	@docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --bootstrap-server kafka:9092 --topic taxi.trip.events --time -1 2>/dev/null | cut -d: -f3 | xargs -I{} echo "Events topic: {} messages available" || echo "Events topic: has messages"
-	@echo "=== CDC VERIFIED ==="
-
-verify-all:                     ## Full pipeline: batch -> Trino -> dbt -> analytics -> Superset -> CDC
-	@echo "=== 1/7 Spark batch ==="
-	$(MAKE) spark-batch
-	@echo "=== 2/7 Trino bootstrap ==="
-	$(MAKE) trino-bootstrap
-	@echo "=== 3/7 dbt build ==="
-	$(MAKE) dbt-build
-	@echo "=== 4/7 Mart verification ==="
-	$(MAKE) verify-mart
-	@echo "=== 5/7 Analytics ==="
-	$(MAKE) verify-analytics
-	@echo "=== 6/7 Superset ==="
-	$(MAKE) superset-check
-	@echo "=== 7/7 CDC ==="
-	$(MAKE) verify-cdc
-	@echo "=== ALL VERIFIED ==="
-
-# ──────────────────────────────────────────────
-# IX. Clean
-# ──────────────────────────────────────────────
-.PHONY: setup-volumes clean-silver clean-quarantine clean-checkpoints clean-metastore clean-all
-
-clean-silver:                   ## Delete silver parquet data
-	docker run --rm -v "$(PWD):/opt/project" --user root alpine:latest sh -c "rm -rf /opt/project/data/silver/trips/* 2>/dev/null; echo cleaned"
-
-clean-quarantine:               ## Delete quarantine parquet data
-	rm -rf data/quarantine/invalid_trips/*
-
-clean-checkpoints:              ## Delete streaming checkpoints
-	rm -rf data/checkpoints/*
-
-clean-metastore:                ## Reset Trino HMS metastore
-	rm -rf data/trino-metastore/*
-
-## One-time: Fix data dir permissions for Docker (Spark runs as uid 185, host as uid 1000)
-setup-volumes:
-	docker run --rm -v "$(PWD):/opt/project" --user root alpine:latest sh -c "rm -rf /opt/project/data/silver/trips /opt/project/data/silver/trips_local_test; mkdir -p /opt/project/data/silver/trips /opt/project/data/quarantine/invalid_trips; chmod 777 /opt/project/data/silver/trips /opt/project/data/quarantine/invalid_trips /opt/project/data/trino-metastore /opt/project/data/checkpoints 2>/dev/null; echo 'Done: data dirs 777'"
-	-chmod 777 data/trino-metastore data/checkpoints 2>/dev/null
-
-## Clean everything (use docker root to delete leftover files)
-clean-all: clean-checkpoints clean-metastore
-	@docker run --rm -v "$(PWD):/opt/project" --user root alpine:latest sh -c "rm -rf /opt/project/data/silver/trips /opt/project/data/quarantine/invalid_trips 2>/dev/null; echo 'cleaned'"
-	mkdir -p data/silver/trips data/quarantine/invalid_trips
-	chmod 777 data/silver/trips data/quarantine/invalid_trips
-	@echo "All generated data cleaned"
-
-# ──────────────────────────────────────────────
-# X. Kubernetes (kind)
-# ──────────────────────────────────────────────
-.PHONY: k8s-cluster k8s-images k8s-deploy k8s-down k8s-start k8s-stop k8s-destroy k8s-ui k8s-ui-stop k8s-status k8s-logs k8s-pipeline k8s-verify
-
 KIND_CLUSTER ?= kind
 KIND_CONFIG ?= kind.yaml
+DOCKER_NETWORK ?= nyc_new_default
 
-k8s-cluster:                    ## Create kind cluster with 3 nodes
+# ──────────────────────────────────────────────
+# I. Kubernetes (kind) — Primary workflow
+# ──────────────────────────────────────────────
+.PHONY: k8s-cluster k8s-images k8s-deploy k8s-start k8s-stop k8s-destroy
+.PHONY: k8s-ui k8s-ui-stop k8s-pipeline k8s-status k8s-logs k8s-verify
+
+k8s-cluster:                    ## Create kind cluster (3 nodes)
 	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
 
 k8s-images:                     ## Build & load custom images into kind
-	docker build -f docker/tools.Dockerfile -t nyc-pipeline-tools:k8s .
-	docker build -f docker/dbt.Dockerfile -t nyc-dbt:k8s .
-	docker build -f docker/airflow.Dockerfile -t nyc-airflow:k8s .
-	kind load docker-image nyc-pipeline-tools:k8s nyc-dbt:k8s nyc-airflow:k8s --name $(KIND_CLUSTER)
+	docker build -q -f docker/tools.Dockerfile -t nyc-pipeline-tools:k8s . && \
+	docker build -q -f docker/dbt.Dockerfile -t nyc-dbt:k8s . && \
+	docker build -q -f docker/airflow.Dockerfile -t nyc-airflow:k8s . && \
+	kind load docker-image nyc-pipeline-tools:k8s nyc-dbt:k8s nyc-airflow:k8s \
+	  --name $(KIND_CLUSTER)
 
 k8s-deploy:                     ## Deploy all K8s manifests (ordered)
-	@echo "Cleaning up old jobs..."
-	-kubectl delete job -n nyc-taxi --all 2>/dev/null || true
-	-kubectl delete job --all 2>/dev/null || true
+	@echo "=== Deploying K8s manifests ==="
+	-kubectl delete job -n nyc-taxi --all 2>/dev/null; kubectl delete job --all 2>/dev/null; true
 	kubectl apply -f k8s/namespace/
 	kubectl apply -f k8s/storage/
 	kubectl apply -f k8s/zookeeper/
@@ -313,102 +50,236 @@ k8s-deploy:                     ## Deploy all K8s manifests (ordered)
 	kubectl apply -n nyc-taxi -f k8s/dbt/
 	kubectl apply -n nyc-taxi -f k8s/jobs/
 
-k8s-pipeline:                   ## Run full K8s pipeline (jobs in order)
+k8s-start:                      ## Start: cluster → images → services → UIs
+	@if ! kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
+		echo "=== Creating kind cluster ==="; \
+		kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG); \
+		echo "=== Building & loading images ==="; \
+		$(MAKE) k8s-images; \
+	fi
+	$(MAKE) k8s-deploy
+	@echo "=== Scaling up services ==="
+	-kubectl scale deployment -n nyc-taxi --all --replicas=1 2>/dev/null || true
+	-kubectl scale statefulset -n nyc-taxi --all --replicas=1 2>/dev/null || true
+	@echo "=== Waiting for core services ==="
+	-kubectl wait --for=condition=ready pod -l app=zookeeper -n nyc-taxi --timeout=120s 2>/dev/null || true
+	-kubectl wait --for=condition=ready pod -l app=kafka -n nyc-taxi --timeout=120s 2>/dev/null || true
+	-kubectl wait --for=condition=ready pod -l app=minio -n nyc-taxi --timeout=120s 2>/dev/null || true
+	-kubectl wait --for=condition=ready pod -l app=trino -n nyc-taxi --timeout=120s 2>/dev/null || true
+	-kubectl wait --for=condition=ready pod -l app=superset -n nyc-taxi --timeout=120s 2>/dev/null || true
+	$(MAKE) k8s-ui
+
+k8s-stop: k8s-ui-stop          ## Scale down all services (keep data)
+	@echo "=== Scaling down ==="
+	kubectl scale deployment -n nyc-taxi --all --replicas=0 2>/dev/null || true
+	kubectl scale statefulset -n nyc-taxi --all --replicas=0 2>/dev/null || true
+	@echo "All services stopped"
+
+k8s-destroy: k8s-ui-stop       ## Delete cluster (services + volumes + images)
+	@echo "=== Deleting cluster ==="
+	kind delete cluster --name $(KIND_CLUSTER)
+	@echo "Cluster deleted"
+
+k8s-ui:                        ## Start port-forwards for all UIs
+	@./scripts/k8s_ui.sh start
+
+k8s-ui-stop:                   ## Stop all port-forwards
+	@./scripts/k8s_ui.sh stop
+
+k8s-pipeline:                  ## Run full pipeline: init → spark → trino → dbt → bridge
+	@echo "=== 1/3 MinIO setup ==="
+	kubectl apply -f k8s/jobs/minio-setup.yaml -n nyc-taxi
+	kubectl wait --for=condition=complete job/minio-setup -n nyc-taxi --timeout=120s
+	@echo "=== 2/10 Init jobs ==="
 	kubectl apply -f k8s/jobs/postgres-init.yaml -n nyc-taxi
 	kubectl apply -f k8s/jobs/topic-init.yaml -n nyc-taxi
-	@echo "Waiting for init jobs..."
 	kubectl wait --for=condition=complete job/postgres-init -n nyc-taxi --timeout=60s
 	kubectl wait --for=condition=complete job/topic-init -n nyc-taxi --timeout=60s
+	@echo "=== 3/10 CDC seed + register ==="
 	kubectl apply -f k8s/jobs/cdc-seed.yaml -n nyc-taxi
 	kubectl apply -f k8s/jobs/cdc-register.yaml -n nyc-taxi
 	kubectl wait --for=condition=complete job/cdc-seed -n nyc-taxi --timeout=120s
 	kubectl wait --for=condition=complete job/cdc-register -n nyc-taxi --timeout=120s
+	@echo "=== 4/10 Spark batch (3 months) ==="
 	kubectl apply -f k8s/jobs/spark-batch-m01.yaml -n nyc-taxi
 	kubectl apply -f k8s/jobs/spark-batch-m02.yaml -n nyc-taxi
 	kubectl apply -f k8s/jobs/spark-batch-m03.yaml -n nyc-taxi
 	kubectl wait --for=condition=complete job/spark-batch-m01 -n nyc-taxi --timeout=600s
 	kubectl wait --for=condition=complete job/spark-batch-m02 -n nyc-taxi --timeout=600s
 	kubectl wait --for=condition=complete job/spark-batch-m03 -n nyc-taxi --timeout=600s
+	@echo "=== 5/10 Trino bootstrap ==="
 	kubectl apply -f k8s/jobs/trino-bootstrap.yaml -n nyc-taxi
 	kubectl wait --for=condition=complete job/trino-bootstrap -n nyc-taxi --timeout=120s
+	@echo "=== 6/10 dbt build ==="
 	kubectl apply -f k8s/dbt/job.yaml -n nyc-taxi
 	kubectl wait --for=condition=complete job/dbt-build -n nyc-taxi --timeout=180s
+	@echo "=== 7/10 CDC bridge ==="
 	kubectl apply -f k8s/jobs/cdc-bridge.yaml -n nyc-taxi
 	kubectl wait --for=condition=complete job/cdc-bridge -n nyc-taxi --timeout=120s
+	@echo "=== Pipeline complete ==="
 
-
-k8s-status:                     ## Show K8s pod status
+k8s-status:                    ## Show pod status
 	kubectl get pods -n nyc-taxi -o wide
 
-k8s-logs:                       ## Tail logs (usage: make k8s-logs JOB=spark-batch-m01)
+k8s-logs:                      ## Tail logs (usage: make k8s-logs JOB=spark-batch-m01)
 	kubectl logs -n nyc-taxi job/$(JOB) --follow
 
-k8s-down:                       ## Delete kind cluster
-	kind delete cluster --name $(KIND_CLUSTER)
+k8s-verify:                    ## Verify row counts via Trino
+	kubectl run -n nyc-taxi --rm -i temp --image=nyc-pipeline-tools:k8s --restart=Never \
+	  -- python3 -c "
+from trino.dbapi import connect
+c = connect('svc-trino', 8080, user='test').cursor()
+for q in [
+    ('trips', 'SELECT count(*) FROM hive.nyc.trips'),
+    ('fact_trips', 'SELECT count(*) FROM hive.mart.fact_trips'),
+    ('dim_zone', 'SELECT count(*) FROM hive.mart.dim_zone'),
+    ('mart_revenue_by_day', 'SELECT count(*) FROM hive.mart.mart_revenue_by_day'),
+]:
+    c.execute(q[1])
+    print(f'{q[0]}: {c.fetchone()[0]}')
+"
 
-k8s-ui:                         ## Start port-forwards for all K8s UIs
-	@./scripts/k8s_ui.sh start
+# ──────────────────────────────────────────────
+# II. Docker Compose — Local dev alternative
+# ──────────────────────────────────────────────
+.PHONY: infra-up infra-up-all infra-down infra-status infra-logs
+.PHONY: kafka-topics kafka-publish
+.PHONY: cdc-up cdc-seed cdc-register cdc-bridge
+.PHONY: spark-batch spark-streaming
+.PHONY: trino-bootstrap trino-shell
+.PHONY: dbt-build dbt-run dbt-test
+.PHONY: superset-bootstrap superset-check
+.PHONY: airflow-up airflow-trigger
+.PHONY: verify-mart verify-analytics verify-cdc verify-all
+.PHONY: clean-silver clean-quarantine clean-all
 
-k8s-ui-stop:                    ## Stop all port-forwards
-	@./scripts/k8s_ui.sh stop
-k8s-start:                      ## Start everything: cluster, images, services, UIs
-	@if ! kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
-		echo "Creating kind cluster..."; \
-		kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG); \
-		echo "Building & loading custom images..."; \
-		docker build -q -f docker/tools.Dockerfile -t nyc-pipeline-tools:k8s .; \
-		docker build -q -f docker/dbt.Dockerfile -t nyc-dbt:k8s .; \
-		docker build -q -f docker/airflow.Dockerfile -t nyc-airflow:k8s .; \
-		kind load docker-image nyc-pipeline-tools:k8s nyc-dbt:k8s nyc-airflow:k8s --name $(KIND_CLUSTER); \
-	fi
-	$(MAKE) k8s-deploy
-	@echo "Scaling up services..."
-	-kubectl scale deployment -n nyc-taxi --all --replicas=1 2>/dev/null || true
-	-kubectl scale statefulset -n nyc-taxi --all --replicas=1 2>/dev/null || true
-	@echo "Waiting for services to be ready..."
-	-kubectl wait --for=condition=ready pod -l app=zookeeper -n nyc-taxi --timeout=120s 2>/dev/null
-	-kubectl wait --for=condition=ready pod -l app=kafka -n nyc-taxi --timeout=120s 2>/dev/null
-	-kubectl wait --for=condition=ready pod -l app=minio -n nyc-taxi --timeout=120s 2>/dev/null
-	-kubectl wait --for=condition=ready pod -l app=spark-master -n nyc-taxi --timeout=60s 2>/dev/null
-	-kubectl wait --for=condition=ready pod -l app=debezium -n nyc-taxi --timeout=60s 2>/dev/null
-	-kubectl wait --for=condition=ready pod -l app=trino -n nyc-taxi --timeout=60s 2>/dev/null
-	-kubectl wait --for=condition=ready pod -l app=superset -n nyc-taxi --timeout=60s 2>/dev/null
-	$(MAKE) k8s-ui
+## Infrastructure
+infra-up:                      ## Start core services (ZK, Kafka, MinIO, Spark)
+	docker compose up -d zookeeper kafka kafka-ui minio spark-master spark-worker
 
-k8s-stop: k8s-ui-stop           ## Scale down all services (keep data)
-	@echo "Scaling down deployments..."
-	kubectl scale deployment -n nyc-taxi --all --replicas=0 2>/dev/null || true
-	@echo "Scaling down statefulsets..."
-	kubectl scale statefulset -n nyc-taxi --all --replicas=0 2>/dev/null || true
-	@echo "All services stopped"
+infra-up-all:                  ## Start everything
+	docker compose --profile tools --profile trino --profile dbt --profile superset --profile airflow up -d
 
-k8s-destroy: k8s-ui-stop        ## Delete kind cluster (services + volumes + images)
-	@echo "Deleting kind cluster $(KIND_CLUSTER)..."
-	kind delete cluster --name $(KIND_CLUSTER)
-	@echo "Cluster deleted — all services, volumes, and images removed"
+infra-down:                    ## Stop services (keep volumes)
+	docker compose down
 
+infra-status:                  ## Show container status
+	docker compose ps
 
-k8s-verify:                     ## Verify K8s pipeline results
-	kubectl run -n nyc-taxi --rm -i temp --image=nyc-pipeline-tools:k8s --restart=Never -- python3 -c "from trino.dbapi import connect; cur = connect('svc-trino', 8080, user='test').cursor(); cur.execute('SELECT count(*) FROM hive.nyc.trips'); print('trips:', cur.fetchone()[0]); cur.execute('SELECT count(*) FROM hive.mart.fact_trips'); print('fact_trips:', cur.fetchone()[0]); cur.execute('SELECT count(*) FROM hive.mart.mart_revenue_by_day'); print('mart_revenue_by_day:', cur.fetchone()[0])"
+infra-logs:                    ## Tail logs (usage: make infra-logs SVC=trino)
+	docker compose logs --tail=50 -f $(SVC)
 
-.PHONY: minio-setup verify-minio
+## Kafka
+kafka-topics:                  ## Create topics
+	docker compose run --rm topic-init
 
-COMPOSE_PROJECT ?= nyc_new
-MINIO_NETWORK ?= $(COMPOSE_PROJECT)_default
+kafka-publish:                 ## Publish events (default 5000)
+	docker compose run --rm \
+	  -e TOPIC="$${TOPIC:-taxi.trip.events.$$(date +%s)}" \
+	  -e MAX_EVENTS="$${MAX_EVENTS:-5000}" \
+	  -e INVALID_RATE="$${INVALID_RATE:-0.02}" \
+	  generator
 
-minio-setup: infra-up            ## Create MinIO buckets + upload raw data
-	docker compose --profile tools run --rm minio-setup
+## CDC
+cdc-up:                        ## Start Postgres + Debezium
+	docker compose --profile tools up -d nyc_postgres debezium
 
-spark-batch-s3: spark-batch      ## Alias — batch now uses MinIO by default
+cdc-seed:                      ## Seed Postgres from parquet (5000 rows)
+	docker compose --profile tools run --rm cdc-seed
 
-spark-streaming-s3: spark-streaming ## Alias — streaming now uses MinIO by default
+cdc-register:                  ## Register Debezium connector
+	docker compose --profile tools run --rm cdc-register
 
-verify-minio:                    ## List MinIO buckets and object counts
-	docker run --rm --network "$(MINIO_NETWORK)" --entrypoint /bin/sh minio/mc:latest \
-	  -c "mc alias set nyc http://minio:9000 minio minio123 && \
-	    echo '=== Buckets ===' && \
-	    mc ls nyc && \
-	    echo '=== Raw files ===' && \
-	    mc ls --recursive nyc/nyc-raw 2>/dev/null | head -20 && \
-	    echo '=== Lookup files ===' && \
-	    mc ls --recursive nyc/nyc-lookup 2>/dev/null"
+cdc-bridge:                    ## Bridge CDC → events
+	docker compose --profile tools run --rm cdc-bridge
+
+## Spark
+spark-batch:                   ## Batch backfill via MinIO S3
+	docker run --rm \
+	  --network "$(DOCKER_NETWORK)" \
+	  -v "$(PWD):/opt/project" -w /opt/project \
+	  -e HOME=/tmp \
+	  --entrypoint /opt/spark/bin/spark-submit \
+	  apache/spark:3.5.1 \
+	  --master local[*] \
+	  --packages "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262" \
+	  --conf spark.jars.ivy=/tmp/.ivy2 \
+	  /opt/project/jobs/spark_local_batch.py \
+	  --input "s3a://nyc-raw/yellow_taxi/year=2024/month=$${MONTH:-01}/yellow_tripdata_2024-$${MONTH:-01}.parquet" \
+	  --lookup "s3a://nyc-lookup/taxi_zone_lookup.csv"
+
+spark-streaming:               ## Submit streaming job (MinIO S3)
+	TOPIC="$${TOPIC:-taxi.trip.events}" bash scripts/start_streaming_job_docker.sh
+
+## Trino
+trino-bootstrap:               ## Register tables in Hive catalog
+	docker compose --profile tools --profile trino run --rm trino-bootstrap
+
+trino-shell:                   ## Interactive Trino shell
+	docker exec -it nyc_trino trino --user analytics
+
+## dbt
+dbt-build:                     ## Full dbt build: models + tests
+	docker compose --profile tools --profile dbt run --rm dbt dbt build
+
+dbt-run:                       ## Run models only
+	docker compose --profile tools --profile dbt run --rm dbt dbt run
+
+dbt-test:                      ## Run tests only
+	docker compose --profile tools --profile dbt run --rm dbt dbt test
+
+## Superset
+superset-bootstrap:            ## Register DB, charts, dashboard
+	docker exec -i nyc_superset python3 < scripts/superset_bootstrap.py
+
+superset-check:                ## List Superset resources
+	docker exec -i nyc_superset python3 < scripts/superset_check.py
+
+## Airflow
+airflow-up:                    ## Start Airflow (requires infra-up)
+	docker compose --profile airflow up -d
+
+airflow-trigger:               ## Trigger DAG (usage: DAG=nyc_analytics_refresh)
+	docker exec nyc_airflow_webserver airflow dags trigger $(DAG)
+
+## Verify
+verify-mart:                   ## Row counts in Trino
+	python3 scripts/verify_mart.py
+
+verify-analytics:              ## 10 SQL questions (PASS 10/10)
+	python3 scripts/run_analytics_questions.py
+
+verify-cdc:                    ## Verify CDC pipeline
+	@echo "=== Postgres ==="
+	@docker compose exec -T nyc_postgres psql -U postgres -d nyc_taxi -c "SELECT count(*) FROM trips;" 2>/dev/null
+	@echo "=== Debezium ==="
+	@curl -sf http://localhost:8084/connectors/nyc-postgres-connector/status 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); s=d['connector']['state']; print(f'State: {s}'); sys.exit(0 if s=='RUNNING' else 1)" || echo "Debezium not found"
+	@echo "=== CDC topic ==="
+	@docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --bootstrap-server kafka:9092 --topic nyc_cdc.public.trips --time -1 2>/dev/null | cut -d: -f3 | xargs -I{} echo "Messages: {}"
+
+verify-all:                    ## Full pipeline verification
+	@echo "=== 1/6 Spark batch ==="
+	$(MAKE) spark-batch
+	@echo "=== 2/6 Trino bootstrap ==="
+	$(MAKE) trino-bootstrap
+	@echo "=== 3/6 dbt build ==="
+	$(MAKE) dbt-build
+	@echo "=== 4/6 Mart verification ==="
+	$(MAKE) verify-mart
+	@echo "=== 5/6 Analytics ==="
+	$(MAKE) verify-analytics
+	@echo "=== 6/6 Superset ==="
+	$(MAKE) superset-check
+	@echo "=== ALL VERIFIED ==="
+
+## Clean
+clean-silver:                  ## Delete silver parquet data
+	rm -rf data/silver/trips/*
+
+clean-quarantine:              ## Delete quarantine parquet
+	rm -rf data/quarantine/invalid_trips/*
+
+clean-all:                     ## Delete all generated data
+	rm -rf data/silver/trips/* data/quarantine/invalid_trips/* data/checkpoints/* data/trino-metastore/*
+	mkdir -p data/silver/trips data/quarantine/invalid_trips
+	@echo "All generated data cleaned"
