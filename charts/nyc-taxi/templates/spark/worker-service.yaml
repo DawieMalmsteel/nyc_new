@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: nyc-taxi
+  labels:
+    app: svc-spark-worker
+  name: svc-spark-worker
+spec:
+  ports:
+  - name: spark-webui
+    port: 8082
+    targetPort: 8082
+  selector:
+    app: spark-worker

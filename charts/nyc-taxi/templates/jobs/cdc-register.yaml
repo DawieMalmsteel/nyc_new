@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: nyc-taxi
+  name: cdc-register
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: cdc-register
+        image: nyc-pipeline-tools:k8s
+        imagePullPolicy: IfNotPresent
+        command:
+        - "entrypoint-cdc-register"
+        - "--debezium-url"
+        - "http://svc-debezium:8083"
+        - "--postgres-host"
+        - "svc-postgres-cdc"
+        volumeMounts:
+        - name: project-files
+          mountPath: /opt/project
+      volumes:
+      - name: project-files
+        persistentVolumeClaim:
+          claimName: project-files-pvc
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 300m
+          memory: 256Mi
+  backoffLimit: 3

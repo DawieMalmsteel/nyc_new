@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: nyc-taxi
+  labels:
+    app: superset
+  name: superset
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: superset
+  template:
+    metadata:
+      labels:
+        app: superset
+    spec:
+      containers:
+      - command:
+        - bash
+        - /app/docker/entrypoint-superset.sh
+        env:
+        - name: SUPERSET_SECRET_KEY
+          value: local-dev-key-with-32-chars-min-1234
+        - name: PYTHONPATH
+          value: /app/docker
+        image: apache/superset:4.0.0
+        imagePullPolicy: IfNotPresent
+        name: superset
+        ports:
+        - containerPort: 8088
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+        volumeMounts:
+        - mountPath: /app/docker
+          name: superset-config
+      volumes:
+      - configMap:
+          name: superset-config
+        name: superset-config

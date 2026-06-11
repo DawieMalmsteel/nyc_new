@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: nyc-taxi
+  name: spark-batch
+  labels:
+    app: spark-batch
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker
+      securityContext:
+        runAsUser: 0
+      containers:
+      - name: spark-batch
+        image: apache/spark:3.5.1
+        imagePullPolicy: IfNotPresent
+        command:
+        - /opt/spark/bin/spark-submit
+        args:
+        - --master
+        - local[*]
+        - /opt/project/jobs/spark_local_batch.py
+        - --input
+        - /opt/project/data/raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet
+        - --lookup
+        - /opt/project/data/lookup/taxi_zone_lookup.csv
+        - --silver
+        - /opt/project/data/silver/trips
+        - --quarantine
+        - /opt/project/data/quarantine/invalid_trips
+        volumeMounts:
+        - name: raw-data
+          mountPath: /opt/project/data
+        - name: project-files
+          mountPath: /opt/project
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2
+            memory: 4Gi
+      volumes:
+      - name: raw-data
+        persistentVolumeClaim:
+          claimName: raw-data-pvc
+      - name: project-files
+        persistentVolumeClaim:
+          claimName: project-files-pvc
+  backoffLimit: 2

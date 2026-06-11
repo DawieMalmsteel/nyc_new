@@ -48,6 +48,10 @@ k8s-deploy:                     ## Deploy all K8s manifests (ordered)
 	kubectl apply -f k8s/airflow/
 	kubectl apply -f k8s/airflow/scheduler/
 	kubectl apply -f k8s/airflow/webserver/
+	# THÊM 3 DÒNG BOOTSTRAP JOBS NÀY VÀO CUỐI:
+	kubectl apply -f k8s/jobs/minio-setup.yaml
+	kubectl apply -f k8s/jobs/postgres-init.yaml
+	kubectl apply -f k8s/jobs/topic-init.yaml
 k8s-start:                      ## Start: cluster → images → services → UIs
 	@if ! kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
 		echo "=== Creating kind cluster ==="; \

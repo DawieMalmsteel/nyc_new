@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: nyc-taxi
+  name: superset-config
+data:
+  superset_config.py: |
+    # Local Superset configuration overrides.
+    import os
+
+    SECRET_KEY = os.environ.get("SUPERSET_SECRET_KEY", "local-dev-key-change-me")
+
+    # Disable CSRF for bootstrap script (POST without CSRF token).
+    WTF_CSRF_ENABLED = False
+    TALISMAN_ENABLED = False
+    ENABLE_CSP = False
+  bootstrap_superset.sh: |
+    #!/usr/bin/env bash
+    # Bootstrap Superset via REST API: Trino DB + datasets + charts + dashboard.
+    set -euo pipefail
+
+    API="http://localhost:8088/api/v1"
+    USER="admin"
+    PASS="admin"
+
+    login() {
+      curl -sf -X POST "$API/security/login" \
+        -H "Content-Type: application/json" \
+        -d "{\"username\":\"$USER\",\"password\":\"$PASS\",\"provider\":\"db\"}" \
+        | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['access_token'])"
+    }
+
+    for i in {1..30}; do
+      if curl -sf http://localhost:8088/health >/dev/null 2>&1; then
+        break
+      fi
+      sleep 2
+    done
+
+    TOKEN=$(login)
+    AUTH=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
+
+    echo "[superset] registering Trino DB"
+    EXISTING=$(curl -sf "${AUTH[@]}" "$API/database/" \
+      | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); m=[r['id'] for r in d['result'] if r['database_name']=='NYC Trino']; print(m[0] if m else '')")
+
+    if [ -n "$EXISTING" ]; then
+      DB_ID="$EXISTING"
+      echo "[superset] database already exists id=$DB_ID"
+    else
+      DB_PAYLOAD='{
+        "database_name": "NYC Trino",
+        "engine": "trino",
+        "configuration_method": "sqlalchemy_form",
+        "sqlalchemy_uri": "trino://analytics@svc-trino:8080/hive/mart"
+      }'
+      RESP=$(curl -s "${AUTH[@]}" -X POST "$API/database/" -d "$DB_PAYLOAD")
+      DB_ID=$(echo "$RESP" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['id'])")
+      echo "[superset] database id=$DB_ID"
+    fi
+
+    register_dataset() {
+      local tbl="$1"
+      local existing_ds
+      existing_ds=$(curl -sf "${AUTH[@]}" "$API/dataset/" \
+        | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); m=[r['id'] for r in d['result'] if r['table_name']=='$tbl' and r.get('database',{}).get('id')==$DB_ID]; print(m[0] if m else '')")
+      if [ -n "$existing_ds" ]; then
+        echo "[superset] dataset '$tbl' already exists id=$existing_ds"
+      else
+        local payload="{\"database\":$DB_ID,\"schema\":\"mart\",\"table_name\":\"$tbl\"}"
+        curl -sf "${AUTH[@]}" -X POST "$API/dataset/" -d "$payload" >/dev/null
+        echo "[superset] dataset '$tbl' created"
+      fi
+    }
+
+    for tbl in fact_trips dim_zone mart_hourly_summary mart_payment_type_summary mart_revenue_by_day mart_revenue_by_zone gold_fact_trips; do
+      register_dataset "$tbl" || echo "[superset] WARN: failed dataset $tbl"
+    done
+
+    echo "[superset] bootstrap complete"
+  entrypoint-superset.sh: |
+    #!/usr/bin/env bash
+    # Initialize Superset, register Trino DB/datasets, then start the webserver.
+    set -euo pipefail
+
+    # Wait for Trino.
+    for i in {1..60}; do
+      if curl -sf http://svc-trino:8080/v1/info >/dev/null 2>&1; then
+        break
+      fi
+      sleep 2
+    done
+
+    export PYTHONPATH=/app/docker
+    echo "[superset] installing sqlalchemy-trino"
+    pip install sqlalchemy-trino --quiet
+
+    echo "[superset] upgrading DB"
+    superset db upgrade
+    superset db upgrade
+    superset fab create-admin \
+      --username admin --firstname Admin --lastname User \
+      --email admin@local --password admin \
+      || true
+
+    echo "[superset] init roles + theme"
+    superset init
+
+    # Start webserver in background, then register DB/datasets/dashboard.
+    echo "[superset] starting webserver in background"
+    superset run -h 0.0.0.0 -p 8088 --with-threads --reload --debugger &
+    SUPERSET_PID=$!
+
+    # Wait for webserver ready.
+    for i in {1..60}; do
+      if curl -sf http://localhost:8088/health >/dev/null 2>&1; then
+        break
+      fi
+      sleep 2
+    done
+
+    echo "[superset] registering Trino DB + datasets"
+    bash /app/docker/bootstrap_superset.sh || echo "[superset] bootstrap failed (continuing)"
+
+    # Keep webserver in foreground.
+    wait $SUPERSET_PID

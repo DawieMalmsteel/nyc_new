@@ -1,8 +1,7 @@
 """DAG: nyc_e2e_pipeline
 
 End-to-end orchestration of the NYC Taxi pipeline.
-
-Schedule: manual trigger; set schedule="@daily" in production.
+Dynamic Incremental Design with Native Airflow Catchup.
 """
 
 from __future__ import annotations
@@ -135,12 +134,19 @@ def validate_analytics() -> None:
         raise RuntimeError(f"analytics failed:\n{result.stderr}")
 
 
-def run_spark_batch(m: str) -> None:
+def run_spark_batch(logical_date_str: str) -> None:
+    # logical_date_str có định dạng "YYYY-MM-DD" truyền từ Jinja Template của Airflow (ví dụ: "2024-01-01")
+    dt = datetime.strptime(logical_date_str, "%Y-%m-%d")
+    year = dt.strftime("%Y")
+    month = dt.strftime("%m")  # Trả về định dạng hai chữ số: "01", "02", "03"...
+
     if IS_K8S:
-        _run(["kubectl", "delete", "job", f"spark-batch-m{m}", "-n", "nyc-taxi", "--ignore-not-found"])
-        _run(["kubectl", "apply", "-f", f"/repo/k8s/jobs/spark-batch-m{m}.yaml", "-n", "nyc-taxi"])
-        _run(["kubectl", "wait", "--for=condition=complete", f"job/spark-batch-m{m}", "-n", "nyc-taxi", "--timeout=600s"])
+        # Tự động chọn đúng file Job YAML theo tháng động trong Kubernetes
+        _run(["kubectl", "delete", "job", f"spark-batch-m{month}", "-n", "nyc-taxi", "--ignore-not-found"])
+        _run(["kubectl", "apply", "-f", f"/repo/k8s/jobs/spark-batch-m{month}.yaml", "-n", "nyc-taxi"])
+        _run(["kubectl", "wait", "--for=condition=complete", f"job/spark-batch-m{month}", "-n", "nyc-taxi", "--timeout=600s"])
     else:
+        # Chạy Local Docker
         _run([
             "docker", "run", "--rm",
             "--network", "nyc_new_default",
@@ -155,7 +161,7 @@ def run_spark_batch(m: str) -> None:
             "--conf", "spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2",
             "--packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
             "/opt/project/jobs/spark_local_batch.py",
-            "--input", f"/opt/project/data/raw/yellow_taxi/yellow_tripdata_2024-{m}.parquet",
+            "--input", f"/opt/project/data/raw/yellow_taxi/yellow_tripdata_{year}-{month}.parquet",
             "--lookup", "/opt/project/data/lookup/taxi_zone_lookup.csv",
             "--silver", "/opt/project/data/silver/trips",
             "--quarantine", "/opt/project/data/quarantine/invalid_trips"
@@ -166,30 +172,28 @@ with DAG(
     dag_id="nyc_e2e_pipeline",
     description="NYC Taxi full pipeline: Spark -> Trino -> dbt -> Superset",
     default_args=DEFAULT_ARGS,
-    start_date=datetime(2026, 1, 1),
-    schedule="@monthly",
-    catchup=False,
-    max_active_runs=1,
+    start_date=datetime(2024, 1, 1), # Khởi chạy lịch sử từ 01/01/2024
+    schedule="@monthly",             # Chu kỳ chạy hàng tháng
+    catchup=True,                    # Bật Catchup để tự động chạy bù dữ liệu quá khứ từ start_date
+    max_active_runs=1,               # Chạy tuần tự từng tháng một để tránh xung đột ghi đè S3
     tags=["nyc", "e2e"],
 ) as dag:
+    
+    # Task Spark Batch duy nhất nhận logical date động qua Jinja Template
+    spark_batch = PythonOperator(
+        task_id="spark_batch",
+        python_callable=run_spark_batch,
+        op_args=["{{ ds }}"]  # "{{ ds }}" trả về ngày chu kỳ dạng "YYYY-MM-DD"
+    )
+
     spark_streaming = PythonOperator(task_id="spark_streaming", python_callable=run_spark_streaming)
     trino_bootstrap = PythonOperator(task_id="trino_bootstrap", python_callable=run_trino_bootstrap)
     dbt_build = PythonOperator(task_id="dbt_build", python_callable=run_dbt)
     superset_bootstrap = PythonOperator(task_id="superset_bootstrap", python_callable=run_superset_bootstrap)
     analytics_check = PythonOperator(task_id="analytics_check", python_callable=validate_analytics)
 
-    # Dynamically run spark batch for months 01-03 sequentially to avoid S3 write conflicts
-    spark_batches = []
-    for m in ["01", "02", "03"]:
-        spark_batch = PythonOperator(
-            task_id=f"spark_batch_{m}",
-            python_callable=run_spark_batch,
-            op_args=[m]
-        )
-        spark_batches.append(spark_batch)
+    # Cấu hình luồng phụ thuộc rõ ràng, tuyến tính
+    spark_batch >> trino_bootstrap
+    spark_streaming >> trino_bootstrap
     
-    for i in range(len(spark_batches) - 1):
-        spark_batches[i] >> spark_batches[i+1]
-    spark_batches[-1] >> trino_bootstrap
-
-    spark_streaming >> trino_bootstrap >> dbt_build >> superset_bootstrap >> analytics_check
+    trino_bootstrap >> dbt_build >> superset_bootstrap >> analytics_check

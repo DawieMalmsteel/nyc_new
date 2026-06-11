@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: nyc-taxi
+  name: postgres-init
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: init
+        image: postgres:16-alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - >
+          PGPASSWORD=postgres psql -h svc-postgres-cdc -U postgres -d nyc_taxi
+          -c "CREATE TABLE IF NOT EXISTS trips (
+            trip_id SERIAL PRIMARY KEY,
+            vendor_id INTEGER,
+            pickup_datetime TIMESTAMP,
+            dropoff_datetime TIMESTAMP,
+            passenger_count INTEGER,
+            trip_distance DOUBLE PRECISION,
+            rate_code_id INTEGER,
+            pickup_location_id INTEGER,
+            dropoff_location_id INTEGER,
+            payment_type INTEGER,
+            fare_amount DOUBLE PRECISION,
+            extra DOUBLE PRECISION,
+            mta_tax DOUBLE PRECISION,
+            tip_amount DOUBLE PRECISION,
+            tolls_amount DOUBLE PRECISION,
+            improvement_surcharge DOUBLE PRECISION,
+            total_amount DOUBLE PRECISION,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );"
+          -c "ALTER TABLE trips REPLICA IDENTITY FULL;"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 300m
+          memory: 256Mi
+  backoffLimit: 3

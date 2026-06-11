@@ -1,0 +1,69 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: nyc-taxi
+  name: spark-streaming
+  labels:
+    app: spark-streaming
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker
+      securityContext:
+        runAsUser: 0
+      containers:
+      - name: spark-streaming
+        image: apache/spark:3.5.1
+        imagePullPolicy: IfNotPresent
+        command:
+        - /opt/spark/bin/spark-submit
+        args:
+        - --master
+        - local[*]
+        - --conf
+        - spark.jars.ivy=/opt/project/.ivy2
+        - --conf
+        - spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2
+        - --conf
+        - spark.scheduler.mode=FAIR
+        - --packages
+        - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+        - /opt/project/jobs/spark_stream_taxi_events.py
+        - --bootstrap-server
+        - svc-kafka:9092
+        - --topic
+        - taxi.trip.events
+        - --lookup-path
+        - s3a://nyc-lookup/taxi_zone_lookup.csv
+        - --silver-path
+        - s3a://nyc-silver/trips
+        - --quarantine-path
+        - s3a://nyc-quarantine/invalid_trips
+        - --checkpoint-path
+        - s3a://nyc-silver/checkpoints/spark_stream_taxi_events/taxi.trip.events
+        - --trigger-available-now
+        env:
+        - name: MINIO_ENDPOINT
+          value: http://svc-minio:9000
+        - name: MINIO_ACCESS_KEY
+          value: minio
+        - name: MINIO_SECRET_KEY
+          value: minio123
+        volumeMounts:
+        - name: project-files
+          mountPath: /opt/project
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2
+            memory: 4Gi
+      volumes:
+      - name: project-files
+        persistentVolumeClaim:
+          claimName: project-files-pvc
+  backoffLimit: 2

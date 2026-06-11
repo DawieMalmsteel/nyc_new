@@ -1,0 +1,21 @@
+apiVersion: skaffold/v4beta3
+kind: Config
+manifests:
+  helm:
+    releases:
+      - name: nyc-taxi
+        chartPath: charts/nyc-taxi
+        valuesFiles: [charts/nyc-taxi/values.yaml]
+build:
+  local:
+    push: false
+  artifacts:
+    - image: nyc-pipeline-tools
+      context: .
+      docker: { dockerfile: docker/tools.Dockerfile }
+    - image: nyc-dbt
+      context: .
+      docker: { dockerfile: docker/dbt.Dockerfile }
+    - image: nyc-airflow
+      context: .
+      docker: { dockerfile: docker/airflow.Dockerfile }
