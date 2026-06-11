@@ -4,7 +4,7 @@
 
 NYC Taxi data pipeline — batch + streaming data engineering pipeline with two deployment modes: **Docker Compose** (local dev) and **Kubernetes (kind)** (production-like). Ingests NYC TLC trip records (Parquet), processes with Spark (enrichment + validation), stores silver/quarantine data in **MinIO S3**, exposes via Trino (Hive catalog), transforms with dbt-trino into analytics marts, and visualizes via Apache Superset. Also supports Debezium CDC from Postgres → Kafka as an alternative event source.
 
-All operations driven through **Makefile**; no manual Docker/kubectl command memorization needed.
+On Kubernetes, **Airflow** is the primary orchestrator — pipeline runs automatically on schedule. Makefile is for local dev/testing only.
 
 ---
 
@@ -123,7 +123,6 @@ make k8s-cluster         # kind create cluster (3 nodes)
 make k8s-images          # Build + load images into kind
 make k8s-deploy          # Deploy all manifests
 make k8s-start           # Full start: cluster → images → services → UIs
-make k8s-pipeline        # Run pipeline (init → spark → trino → dbt → bridge → verify)
 make k8s-stop            # Scale down services (keep data)
 make k8s-destroy         # kind delete cluster (all data gone)
 make k8s-ui              # Start port-forwards (39080-39086)
@@ -195,10 +194,10 @@ make clean-all           # Delete generated data
 
 ### Airflow (DAGs)
 - **PythonOperator** over BashOperator (more reliable for complex `subprocess.run` calls).
-- Docker-in-Docker via `subprocess.run(["docker", ...])` with absolute host paths (`/home/dwcks/vsf_gsm/nyc_new`).
+- On **K8s**: submits K8s jobs via `kubectl apply -f k8s/jobs/` + waits for completion (`kubectl wait --for=condition=complete`). On **Docker Compose**: runs Docker-in-Docker via `subprocess.run(["docker", ...])`.
+- `IS_K8S` flag auto-detects environment via `KUBERNETES_SERVICE_HOST` env var.
 - `capture_output=True, text=True`, logging stdout/stderr. Raises `RuntimeError` on non-zero exit.
-- Manual trigger (`schedule=None`), no catchup.
-
+- Schedules: `nyc_e2e_pipeline` @monthly, `nyc_analytics_refresh` @weekly.
 ### CDC (Debezium)
 - Postgres 16 with WAL logical replication (`wal_level=logical`).
 - Debezium Kafka Connect 2.5 — Postgres connector, `ExtractNewRecordState` SMT.
@@ -277,9 +276,9 @@ tar cf - scripts/ k8s/ | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
 - Row counts via Trino `hive.mart.*` views.
 - Expected: `dim_zone` = 261, `fact_trips` = ~8-10M, `mart_hourly` = ~11K+, `mart_revenue_by_day` = ~96.
 
-### Full Pipeline (`make verify-all`)
-6 steps: Spark batch → Trino bootstrap → dbt build → mart verification → analytics → Superset check → CDC verify.
-
+### Full Pipeline (Airflow DAG `nyc_e2e_pipeline`)
+8 tasks: Spark streaming + 3x Spark batch → Trino bootstrap → dbt build → Superset bootstrap → analytics check.
+Trigger via Airflow UI (http://localhost:39085) or CLI (`make airflow-trigger DAG=nyc_e2e_pipeline`).
 ### Key Constraints
 - **Hive HMS**: No `RENAME TABLE`. All dbt models **must** be `materialized='view'`. `materialized='table'` fails at build time.
 - **MinIO credentials**: Hardcoded `minio/minio123` in Spark config, Trino catalog, and mc. Change everywhere if rotated.

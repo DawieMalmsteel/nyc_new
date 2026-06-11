@@ -1,9 +1,7 @@
-metadata:
-  namespace: nyc-taxi
-
 apiVersion: v1
 kind: Service
 metadata:
+  namespace: nyc-taxi
   labels:
     app: svc-trino
   name: svc-trino

@@ -1,9 +1,7 @@
-metadata:
-  namespace: nyc-taxi
-
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
+  namespace: nyc-taxi
   name: minio-data
 spec:
   accessModes:

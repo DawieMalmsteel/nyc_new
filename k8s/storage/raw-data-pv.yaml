@@ -1,9 +1,7 @@
-metadata:
-  namespace: nyc-taxi
-
 apiVersion: v1
 kind: PersistentVolume
 metadata:
+  namespace: nyc-taxi
   name: raw-data-pv
 spec:
   capacity:
@@ -25,6 +23,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
+  namespace: nyc-taxi
   name: raw-data-pvc
 spec:
   accessModes:

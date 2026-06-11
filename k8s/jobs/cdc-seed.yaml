@@ -1,9 +1,7 @@
-metadata:
-  namespace: nyc-taxi
-
 apiVersion: batch/v1
 kind: Job
 metadata:
+  namespace: nyc-taxi
   name: cdc-seed
 spec:
   template:

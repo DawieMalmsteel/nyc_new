@@ -1,7 +1,5 @@
-metadata:
-  namespace: nyc-taxi
-
 apiVersion: v1
 kind: Namespace
 metadata:
+  namespace: nyc-taxi
   name: nyc-taxi

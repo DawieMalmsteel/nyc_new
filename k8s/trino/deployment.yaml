@@ -1,9 +1,7 @@
-metadata:
-  namespace: nyc-taxi
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  namespace: nyc-taxi
   labels:
     app: trino
   name: trino

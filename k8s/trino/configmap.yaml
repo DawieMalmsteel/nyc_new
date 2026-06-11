@@ -1,9 +1,7 @@
-metadata:
-  namespace: nyc-taxi
-
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  namespace: nyc-taxi
   name: trino-config
 data:
   config.properties: |

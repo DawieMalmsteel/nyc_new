@@ -1,6 +1,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
+  namespace: nyc-taxi
   name: airflow-role
   namespace: nyc-taxi
 rules:
@@ -14,12 +15,14 @@ rules:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  namespace: nyc-taxi
   name: airflow-sa
   namespace: nyc-taxi
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
+  namespace: nyc-taxi
   name: airflow-rb
   namespace: nyc-taxi
 subjects:

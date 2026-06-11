@@ -1,9 +1,7 @@
-metadata:
-  namespace: nyc-taxi
-
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
+  namespace: nyc-taxi
   name: kafka
   namespace: nyc-taxi
 spec:

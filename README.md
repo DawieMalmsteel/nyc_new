@@ -5,7 +5,7 @@ End-to-end data pipeline for NYC TLC trip records — batch and streaming. Two d
 - **Kubernetes (kind)** — primary, production-like (3-node cluster, all services in pods)
 - **Docker Compose** — local development (single host, lighter)
 
-MinIO S3 as storage layer, Spark for processing, Trino/Hive for catalog, dbt-trino for transformations, Apache Superset for dashboards, Airflow for orchestration.
+MinIO S3 as storage layer, Spark for processing, Trino/Hive for catalog, dbt-trino for transformations, Apache Superset for dashboards. On Kubernetes, **Airflow** is the primary orchestrator running the pipeline automatically on schedule; Makefile targets serve local development only.
 
 ## Architecture
 
@@ -70,8 +70,9 @@ flowchart TD
 # 1. Start everything (cluster + images + services + UIs)
 make k8s-start
 
-# 2. Run full pipeline (MinIO setup → Spark batch → Trino → dbt → CDC bridge → verify)
-make k8s-pipeline
+# 2. Trigger the pipeline via Airflow UI or CLI
+#    Airflow UI: http://localhost:39085 (admin/admin) — DAG: nyc_e2e_pipeline
+#    CLI: make airflow-trigger DAG=nyc_e2e_pipeline
 
 # 3. Verify analytics (10 SQL queries against Trino)
 make k8s-verify-analytics
@@ -85,6 +86,8 @@ make k8s-stop
 # 6. Destroy (delete cluster, all data gone)
 make k8s-destroy
 ```
+
+After cluster starts, Airflow runs the pipeline automatically on schedule (@monthly for e2e, @weekly for analytics).
 
 ## Quick Start — Docker Compose
 
@@ -223,7 +226,7 @@ MinIO S3 buckets:
 | Catalog | Trino 435 | Hive connector + S3 connector, reads parquet from MinIO |
 | Transformation | dbt-trino | 15 views (staging → marts → gold), 9 tests |
 | Visualization | Apache Superset 4.0.0 | Trino-backed dashboard with charts |
-| Orchestration | Airflow 2.10.5 | DAGs: `nyc_e2e_pipeline`, `nyc_analytics_refresh` |
+| Orchestration | Airflow 2.10.5 | Primary orchestrator on K8s (auto-scheduled DAGs); Makefile targets for local dev. DAGs: `nyc_e2e_pipeline`, `nyc_analytics_refresh` |
 | CDC | Debezium 2.5 + Postgres 16 | WAL-based CDC, bridge to standard event format |
 
 ## CDC Pipeline
@@ -252,3 +255,4 @@ CDC bridge runs as a poll-based loop with idle timeout (5s) — exits automatica
 - **All dbt models** are `materialized='view'` — Hive file-based HMS does not support `RENAME TABLE`.
 - **Port-forward survival**: `scripts/k8s_ui.sh` uses `setsid -f` so processes survive `make` exit.
 - **Kafka bootstrap**: Host `localhost:29092`, containers `nyc_kafka:9092`, K8s `svc-kafka:9092`.
+- **Airflow DAG management**: DAGs `nyc_e2e_pipeline` (@monthly) and `nyc_analytics_refresh` (@weekly) run automatically on Kubernetes. Trigger manually via Airflow UI (http://localhost:39085) or `make airflow-trigger DAG=<name>`.

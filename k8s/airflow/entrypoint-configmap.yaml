@@ -1,9 +1,7 @@
-metadata:
-  namespace: nyc-taxi
-
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  namespace: nyc-taxi
   name: airflow-entrypoint
 data:
   entrypoint-airflow.sh: |

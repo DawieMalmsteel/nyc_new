@@ -18,7 +18,7 @@ DOCKER_NETWORK ?= nyc_new_default
 # ──────────────────────────────────────────────
 # I. Kubernetes (kind) — Primary workflow
 # ──────────────────────────────────────────────
-.PHONY: k8s-cluster k8s-images k8s-deploy k8s-start k8s-up k8s-stop k8s-destroy
+.PHONY: k8s-cluster k8s-images k8s-deploy k8s-start k8s-up k8s-stop k8s-down k8s-destroy
 .PHONY: k8s-ui k8s-ui-stop k8s-status k8s-logs k8s-verify
 k8s-cluster:                    ## Create kind cluster (3 nodes)
 	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
@@ -67,6 +67,12 @@ k8s-start:                      ## Start: cluster → images → services → UI
 	-kubectl wait --for=condition=ready pod -l app=superset -n nyc-taxi --timeout=120s 2>/dev/null || true
 	$(MAKE) k8s-ui
 
+
+k8s-down: k8s-ui-stop          ## Scale down all services (keep data, symmetrical to k8s-up)
+	@echo "=== Scaling down ==="
+	kubectl scale deployment -n nyc-taxi --all --replicas=0 2>/dev/null || true
+	kubectl scale statefulset -n nyc-taxi --all --replicas=0 2>/dev/null || true
+	@echo "All services stopped"
 k8s-stop: k8s-ui-stop          ## Scale down all services (keep data)
 	@echo "=== Scaling down ==="
 	kubectl scale deployment -n nyc-taxi --all --replicas=0 2>/dev/null || true
