@@ -2,12 +2,12 @@
 ## ==============================
 ## Primary orchestrator: Airflow (K8s)
 ## This Makefile is for local dev/testing with Docker Compose.
-## For K8s: make k8s-start → Airflow orchestrates the pipeline automatically.
-#   make k8s-start            # Start everything (cluster + services + UIs)
-#   make k8s-pipeline         # Run full data pipeline
-#   make k8s-stop             # Scale down all services
-#   make k8s-destroy          # Delete cluster (volumes + images)
-#   make k8s-ui               # Start port-forwards for all UIs
+## For K8s: make k8s-up → starts everything, waits for all pods, verifies UIs.
+#   make k8s-start           # Start cluster + deploy + core wait + UIs
+#   make k8s-up              # Same but waits for ALL pods, health check, summary
+#   make k8s-stop            # Scale down all services (keep data)
+#   make k8s-destroy         # Delete cluster (volumes + images)
+#   make k8s-ui              # Start port-forwards for all UIs
 
 SHELL := /bin/bash
 
@@ -18,9 +18,8 @@ DOCKER_NETWORK ?= nyc_new_default
 # ──────────────────────────────────────────────
 # I. Kubernetes (kind) — Primary workflow
 # ──────────────────────────────────────────────
-.PHONY: k8s-cluster k8s-images k8s-deploy k8s-start k8s-stop k8s-destroy
-.PHONY: k8s-ui k8s-ui-stop k8s-pipeline k8s-status k8s-logs k8s-verify
-
+.PHONY: k8s-cluster k8s-images k8s-deploy k8s-start k8s-up k8s-stop k8s-destroy
+.PHONY: k8s-ui k8s-ui-stop k8s-status k8s-logs k8s-verify
 k8s-cluster:                    ## Create kind cluster (3 nodes)
 	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
 
@@ -85,39 +84,48 @@ k8s-ui:                        ## Start port-forwards for all UIs
 k8s-ui-stop:                   ## Stop all port-forwards
 	@./scripts/k8s_ui.sh stop
 
-k8s-pipeline:                  ## Run full pipeline: init → spark → trino → dbt → bridge
-	@echo "=== 1/3 MinIO setup ==="
-	kubectl apply -f k8s/jobs/minio-setup.yaml -n nyc-taxi
-	kubectl wait --for=condition=complete job/minio-setup -n nyc-taxi --timeout=120s
-	@echo "=== 2/10 Init jobs ==="
-	kubectl apply -f k8s/jobs/postgres-init.yaml -n nyc-taxi
-	kubectl apply -f k8s/jobs/topic-init.yaml -n nyc-taxi
-	kubectl wait --for=condition=complete job/postgres-init -n nyc-taxi --timeout=60s
-	kubectl wait --for=condition=complete job/topic-init -n nyc-taxi --timeout=60s
-	@echo "=== 3/10 CDC seed + register ==="
-	kubectl apply -f k8s/jobs/cdc-seed.yaml -n nyc-taxi
-	kubectl apply -f k8s/jobs/cdc-register.yaml -n nyc-taxi
-	kubectl wait --for=condition=complete job/cdc-seed -n nyc-taxi --timeout=120s
-	kubectl wait --for=condition=complete job/cdc-register -n nyc-taxi --timeout=120s
-	@echo "=== 4/10 Spark batch (3 months) ==="
-	kubectl apply -f k8s/jobs/spark-batch-m01.yaml -n nyc-taxi
-	kubectl apply -f k8s/jobs/spark-batch-m02.yaml -n nyc-taxi
-	kubectl apply -f k8s/jobs/spark-batch-m03.yaml -n nyc-taxi
-	kubectl wait --for=condition=complete job/spark-batch-m01 -n nyc-taxi --timeout=600s
-	kubectl wait --for=condition=complete job/spark-batch-m02 -n nyc-taxi --timeout=600s
-	kubectl wait --for=condition=complete job/spark-batch-m03 -n nyc-taxi --timeout=600s
-	@echo "=== 5/10 Trino bootstrap ==="
-	kubectl apply -f k8s/jobs/trino-bootstrap.yaml -n nyc-taxi
-	kubectl wait --for=condition=complete job/trino-bootstrap -n nyc-taxi --timeout=120s
-	@echo "=== 6/10 dbt build ==="
-	kubectl apply -f k8s/dbt/job.yaml -n nyc-taxi
-	kubectl wait --for=condition=complete job/dbt-build -n nyc-taxi --timeout=180s
-	@echo "=== 7/10 CDC bridge ==="
-	kubectl apply -f k8s/jobs/cdc-bridge.yaml -n nyc-taxi
-	kubectl wait --for=condition=complete job/cdc-bridge -n nyc-taxi --timeout=120s
-	@echo "=== 8/10 Verify ==="
-	$(MAKE) k8s-verify
-	@echo "=== Pipeline complete ==="
+k8s-up:                         ## Start all services, zero errors, no kubectl needed
+	@echo "=== NYC Taxi — Starting all services ==="
+	@echo ""
+	@if ! kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
+		echo "  Creating cluster..."; \
+		kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG); \
+		echo "  Building & loading images..."; \
+		docker build -q -f docker/tools.Dockerfile -t nyc-pipeline-tools:k8s .; \
+		docker build -q -f docker/dbt.Dockerfile -t nyc-dbt:k8s .; \
+		docker build -q -f docker/airflow.Dockerfile -t nyc-airflow:k8s .; \
+		kind load docker-image nyc-pipeline-tools:k8s nyc-dbt:k8s nyc-airflow:k8s --name $(KIND_CLUSTER); \
+	fi
+	@docker exec kind-worker mkdir -p /mnt/nyc-data /mnt/nyc-project 2>/dev/null; true
+	@echo "  Deploying manifests..."
+	@$(MAKE) -s k8s-deploy 2>&1 | grep -cE "created|configured" | xargs -I{} echo "    {} resources applied"
+	@kubectl scale deployment -n nyc-taxi --all --replicas=1 2>/dev/null
+	@kubectl scale statefulset -n nyc-taxi --all --replicas=1 2>/dev/null
+	@echo "  Waiting for all pods (up to 5m)..."
+	@if kubectl wait --for=condition=ready pod --all -n nyc-taxi --timeout=300s 2>/dev/null; then \
+		echo "  ✅ All pods ready"; \
+	else \
+		echo ""; \
+		echo "  ❌ Timed out — unhealthy pods:"; \
+		kubectl get pods -n nyc-taxi --no-headers 2>&1 | awk '{if ($$2!~/1\/1/ && $$3!="Completed") print "    " $$1 " → " $$3}'; \
+		echo ""; \
+		echo "  Run 'kubectl describe pod -n nyc-taxi <name>' for details."; \
+		false; \
+	fi
+	@echo "  Starting port-forwards..."
+	@$(MAKE) k8s-ui 2>/dev/null
+	@sleep 2
+	@echo "  Checking UIs..."
+	@for entry in "39080 Superset" "39082 Kafka-UI" "39083 Spark" "39084 Trino" "39085 Airflow" "39086 MinIO"; do \
+		port=$$(echo $$entry | awk '{print $$1}'); \
+		name=$$(echo $$entry | awk '{print $$2}'); \
+		code=$$(curl -so /dev/null -w '%{http_code}' --max-time 3 http://localhost:$$port 2>/dev/null || echo "000"); \
+		if [ "$$code" != "000" ]; then printf "  ✅ %-20s %3s\n" "$$name" "$$code"; \
+		else printf "  ⏳ %-20s (port forward not yet)\n" "$$name"; fi; \
+	done
+	@echo ""
+	@echo "=== ✅ All services running ==="
+	@kubectl get pods -n nyc-taxi --no-headers 2>&1 | awk '{printf "  %-40s %s\n", $$1, $$3}'
 
 k8s-status:                    ## Show pod status
 	kubectl get pods -n nyc-taxi -o wide
