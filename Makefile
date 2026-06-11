@@ -96,12 +96,9 @@ k8s-up:                         ## Start all services, zero errors, no kubectl n
 	@if ! kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
 		echo "  Creating cluster..."; \
 		kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG); \
-		echo "  Building & loading images..."; \
-		docker build -q -f docker/tools.Dockerfile -t nyc-pipeline-tools:k8s .; \
-		docker build -q -f docker/dbt.Dockerfile -t nyc-dbt:k8s .; \
-		docker build -q -f docker/airflow.Dockerfile -t nyc-airflow:k8s .; \
-		kind load docker-image nyc-pipeline-tools:k8s nyc-dbt:k8s nyc-airflow:k8s --name $(KIND_CLUSTER); \
 	fi
+	@echo "  Building & loading images..."
+	@$(MAKE) -s k8s-images
 	@docker exec kind-worker mkdir -p /mnt/nyc-data /mnt/nyc-project 2>/dev/null; true
 	@echo "  Deploying manifests..."
 	@$(MAKE) -s k8s-deploy 2>&1 | grep -cE "created|configured" | xargs -I{} echo "    {} resources applied"
@@ -111,28 +108,14 @@ k8s-up:                         ## Start all services, zero errors, no kubectl n
 	@if kubectl wait --for=condition=ready pod --all -n nyc-taxi --timeout=300s 2>/dev/null; then \
 		echo "  ✅ All pods ready"; \
 	else \
-		echo ""; \
 		echo "  ❌ Timed out — unhealthy pods:"; \
-		kubectl get pods -n nyc-taxi --no-headers 2>&1 | awk '{if ($$2!~/1\/1/ && $$3!="Completed") print "    " $$1 " → " $$3}'; \
-		echo ""; \
-		echo "  Run 'kubectl describe pod -n nyc-taxi <name>' for details."; \
-		false; \
+		kubectl get pods -n nyc-taxi --no-headers | grep -vE "Running|Completed" | awk '{print "    " $$1 " → " $$3}'; \
+		exit 1; \
 	fi
 	@echo "  Starting port-forwards..."
-	@$(MAKE) k8s-ui 2>/dev/null
-	@sleep 2
-	@echo "  Checking UIs..."
-	@for entry in "39080 Superset" "39082 Kafka-UI" "39083 Spark" "39084 Trino" "39085 Airflow" "39086 MinIO"; do \
-		port=$$(echo $$entry | awk '{print $$1}'); \
-		name=$$(echo $$entry | awk '{print $$2}'); \
-		code=$$(curl -so /dev/null -w '%{http_code}' --max-time 3 http://localhost:$$port 2>/dev/null || echo "000"); \
-		if [ "$$code" != "000" ]; then printf "  ✅ %-20s %3s\n" "$$name" "$$code"; \
-		else printf "  ⏳ %-20s (port forward not yet)\n" "$$name"; fi; \
-	done
-	@echo ""
+	@$(MAKE) -s k8s-ui
 	@echo "=== ✅ All services running ==="
-	@kubectl get pods -n nyc-taxi --no-headers 2>&1 | awk '{printf "  %-40s %s\n", $$1, $$3}'
-
+	@kubectl get pods -n nyc-taxi
 k8s-status:                    ## Show pod status
 	kubectl get pods -n nyc-taxi -o wide
 
