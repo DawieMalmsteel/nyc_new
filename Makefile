@@ -1,8 +1,8 @@
-# Makefile — NYC Taxi Pipeline
-# ============================
-# Mặc định chạy trên Kubernetes (kind). Docker Compose vẫn hỗ trợ cho local dev.
-#
-# Usage:
+## NYC Taxi Pipeline — Makefile
+## ==============================
+## Primary orchestrator: Airflow (K8s)
+## This Makefile is for local dev/testing with Docker Compose.
+## For K8s: make k8s-start → Airflow orchestrates the pipeline automatically.
 #   make k8s-start            # Start everything (cluster + services + UIs)
 #   make k8s-pipeline         # Run full data pipeline
 #   make k8s-stop             # Scale down all services
@@ -236,10 +236,10 @@ superset-check:                ## List Superset resources
 	docker exec -i nyc_superset python3 < scripts/superset_check.py
 
 ## Airflow
-airflow-up:                    ## Start Airflow (requires infra-up)
+airflow-up:                    ## [Docker Compose only] Start Airflow
 	docker compose --profile airflow up -d
 
-airflow-trigger:               ## Trigger DAG (usage: DAG=nyc_analytics_refresh)
+airflow-trigger:               ## [Docker Compose only] Trigger DAG (usage: DAG=nyc_analytics_refresh)
 	docker exec nyc_airflow_webserver airflow dags trigger $(DAG)
 
 ## Verify

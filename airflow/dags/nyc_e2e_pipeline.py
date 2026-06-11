@@ -30,6 +30,8 @@ DEFAULT_ARGS = {
 REPO_HOST = "/home/dwcks/vsf_gsm/nyc_new"
 REPO_INSIDE_AIRFLOW = Path("/repo")
 
+IS_K8S = os.path.exists("/var/run/secrets/kubernetes.io") or "KUBERNETES_SERVICE_HOST" in os.environ
+
 
 def _run(cmd: list[str]) -> None:
     log.info("exec: %s", " ".join(cmd))
@@ -43,57 +45,89 @@ def _run(cmd: list[str]) -> None:
 
 
 def run_spark_streaming() -> None:
-    env = os.environ.copy()
-    env["MAX_EVENTS"] = os.environ.get("MAX_EVENTS", "1000")
-    result = subprocess.run(
-        [
+    if IS_K8S:
+        _run(["kubectl", "delete", "job", "spark-streaming", "-n", "nyc-taxi", "--ignore-not-found"])
+        _run(["kubectl", "apply", "-f", "/repo/k8s/jobs/spark-streaming.yaml", "-n", "nyc-taxi"])
+        _run(["kubectl", "wait", "--for=condition=complete", "job/spark-streaming", "-n", "nyc-taxi", "--timeout=300s"])
+    else:
+        # Run local Spark streaming via docker run
+        _run([
+            "docker", "run", "--rm",
+            "--network", "nyc_new_default",
+            "-v", f"{REPO_HOST}:/opt/project",
+            "-e", "MINIO_ENDPOINT=http://minio:9000",
+            "-e", "MINIO_ACCESS_KEY=minio",
+            "-e", "MINIO_SECRET_KEY=minio123",
+            "apache/spark:3.5.1",
+            "/opt/spark/bin/spark-submit",
+            "--master", "local[*]",
+            "--conf", "spark.jars.ivy=/opt/project/.ivy2",
+            "--conf", "spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2",
+            "--conf", "spark.scheduler.mode=FAIR",
+            "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
+            "/opt/project/jobs/spark_stream_taxi_events.py",
+            "--bootstrap-server", "kafka:9092",
+            "--topic", "taxi.trip.events",
+            "--lookup-path", "s3a://nyc-lookup/taxi_zone_lookup.csv",
+            "--silver-path", "s3a://nyc-silver/trips",
+            "--quarantine-path", "s3a://nyc-quarantine/invalid_trips",
+            "--checkpoint-path", "s3a://nyc-silver/checkpoints/spark_stream_taxi_events/taxi.trip.events",
+            "--trigger-available-now"
+        ])
+
+
+def run_trino_bootstrap() -> None:
+    if IS_K8S:
+        _run(["kubectl", "delete", "job", "trino-bootstrap", "-n", "nyc-taxi", "--ignore-not-found"])
+        _run(["kubectl", "apply", "-f", "/repo/k8s/jobs/trino-bootstrap.yaml", "-n", "nyc-taxi"])
+        _run(["kubectl", "wait", "--for=condition=complete", "job/trino-bootstrap", "-n", "nyc-taxi", "--timeout=120s"])
+    else:
+        _run([
             "docker", "run", "--rm",
             "--network", "nyc_new_default",
             "-v", f"{REPO_HOST}:/opt/project",
             "-v", "/var/run/docker.sock:/var/run/docker.sock",
-            "nyc-pipeline-tools:latest", "entrypoint-generator",
-        ],
-        capture_output=True, text=True, env=env,
-    )
-    if result.stdout:
-        log.info("stdout: %s", result.stdout)
-    if result.stderr:
-        log.error("stderr: %s", result.stderr)
-    if result.returncode != 0:
-        raise RuntimeError(f"spark streaming failed (rc={result.returncode})")
-
-
-def run_trino_bootstrap() -> None:
-    _run([
-        "docker", "run", "--rm",
-        "--network", "nyc_new_default",
-        "-v", f"{REPO_HOST}:/opt/project",
-        "-v", "/var/run/docker.sock:/var/run/docker.sock",
-        "nyc-pipeline-tools:latest", "entrypoint-trino-bootstrap",
-    ])
+            "nyc-pipeline-tools:latest", "entrypoint-trino-bootstrap",
+        ])
 
 
 def run_dbt() -> None:
-    _run([
-        "docker", "run", "--rm",
-        "--network", "nyc_new_default",
-        "-v", f"{REPO_HOST}:/opt/project",
-        "-v", "/var/run/docker.sock:/var/run/docker.sock",
-        "nyc-dbt:latest", "entrypoint-dbt",
-    ])
+    if IS_K8S:
+        _run(["kubectl", "delete", "job", "dbt-build", "-n", "nyc-taxi", "--ignore-not-found"])
+        _run(["kubectl", "apply", "-f", "/repo/k8s/dbt/job.yaml", "-n", "nyc-taxi"])
+        _run(["kubectl", "wait", "--for=condition=complete", "job/dbt-build", "-n", "nyc-taxi", "--timeout=180s"])
+    else:
+        _run([
+            "docker", "run", "--rm",
+            "--network", "nyc_new_default",
+            "-v", f"{REPO_HOST}:/opt/project",
+            "-v", "/var/run/docker.sock:/var/run/docker.sock",
+            "nyc-dbt:latest", "entrypoint-dbt",
+        ])
 
 
 def run_superset_bootstrap() -> None:
-    _run([
-        "docker", "exec", "nyc_superset",
-        "bash", "/app/docker/bootstrap_superset.sh",
-    ])
+    if IS_K8S:
+        _run(["kubectl", "exec", "-n", "nyc-taxi", "deploy/superset", "--", "bash", "/app/docker/bootstrap_superset.sh"])
+    else:
+        _run([
+            "docker", "exec", "nyc_superset",
+            "bash", "/app/docker/bootstrap_superset.sh",
+        ])
 
 
 def validate_analytics() -> None:
+    env = os.environ.copy()
+    if IS_K8S:
+        env["TRINO_HOST"] = "svc-trino"
+        env["TRINO_PORT"] = "8080"
+    else:
+        env["TRINO_HOST"] = "trino-coordinator"
+        env["TRINO_PORT"] = "8080"
+
     result = subprocess.run(
         [sys.executable, str(REPO_INSIDE_AIRFLOW / "scripts" / "run_analytics_questions.py")],
-        cwd=REPO_INSIDE_AIRFLOW, capture_output=True, text=True,
+        cwd=REPO_INSIDE_AIRFLOW, capture_output=True, text=True, env=env,
     )
     log.info("stdout: %s", result.stdout)
     if result.returncode != 0:
@@ -101,12 +135,39 @@ def validate_analytics() -> None:
         raise RuntimeError(f"analytics failed:\n{result.stderr}")
 
 
+def run_spark_batch(m: str) -> None:
+    if IS_K8S:
+        _run(["kubectl", "delete", "job", f"spark-batch-m{m}", "-n", "nyc-taxi", "--ignore-not-found"])
+        _run(["kubectl", "apply", "-f", f"/repo/k8s/jobs/spark-batch-m{m}.yaml", "-n", "nyc-taxi"])
+        _run(["kubectl", "wait", "--for=condition=complete", f"job/spark-batch-m{m}", "-n", "nyc-taxi", "--timeout=600s"])
+    else:
+        _run([
+            "docker", "run", "--rm",
+            "--network", "nyc_new_default",
+            "-v", f"{REPO_HOST}:/opt/project",
+            "-e", "MINIO_ENDPOINT=http://minio:9000",
+            "-e", "MINIO_ACCESS_KEY=minio",
+            "-e", "MINIO_SECRET_KEY=minio123",
+            "apache/spark:3.5.1",
+            "/opt/spark/bin/spark-submit",
+            "--master", "local[*]",
+            "--conf", "spark.jars.ivy=/opt/project/.ivy2",
+            "--conf", "spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2",
+            "--packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
+            "/opt/project/jobs/spark_local_batch.py",
+            "--input", f"/opt/project/data/raw/yellow_taxi/yellow_tripdata_2024-{m}.parquet",
+            "--lookup", "/opt/project/data/lookup/taxi_zone_lookup.csv",
+            "--silver", "/opt/project/data/silver/trips",
+            "--quarantine", "/opt/project/data/quarantine/invalid_trips"
+        ])
+
+
 with DAG(
     dag_id="nyc_e2e_pipeline",
     description="NYC Taxi full pipeline: Spark -> Trino -> dbt -> Superset",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2026, 1, 1),
-    schedule=None,
+    schedule="@monthly",
     catchup=False,
     max_active_runs=1,
     tags=["nyc", "e2e"],
@@ -117,17 +178,18 @@ with DAG(
     superset_bootstrap = PythonOperator(task_id="superset_bootstrap", python_callable=run_superset_bootstrap)
     analytics_check = PythonOperator(task_id="analytics_check", python_callable=validate_analytics)
 
-    # Dynamically run spark batch for months 01-03
+    # Dynamically run spark batch for months 01-03 sequentially to avoid S3 write conflicts
+    spark_batches = []
     for m in ["01", "02", "03"]:
         spark_batch = PythonOperator(
             task_id=f"spark_batch_{m}",
-            python_callable=_run,
-            op_args=[["/opt/spark/bin/spark-submit", "--master", "local[*]", "/opt/project/jobs/spark_local_batch.py",
-                      "--input", f"/opt/project/data/raw/yellow_taxi/year=2024/month={m}/yellow_tripdata_2024-{m}.parquet",
-                      "--lookup", "/opt/project/data/lookup/taxi_zone_lookup.csv",
-                      "--silver", "/opt/project/data/silver/trips",
-                      "--quarantine", "/opt/project/data/quarantine/invalid_trips"]]
+            python_callable=run_spark_batch,
+            op_args=[m]
         )
-        spark_batch >> trino_bootstrap
+        spark_batches.append(spark_batch)
+    
+    for i in range(len(spark_batches) - 1):
+        spark_batches[i] >> spark_batches[i+1]
+    spark_batches[-1] >> trino_bootstrap
 
     spark_streaming >> trino_bootstrap >> dbt_build >> superset_bootstrap >> analytics_check

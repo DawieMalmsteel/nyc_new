@@ -67,3 +67,9 @@ terraform/*.tfstate.backup
 terraform/*.tfplan
 terraform/terraform.tfvars
 terraform/*.auto.tfvars
+
+# ── Spark Ivy cache ──
+.ivy2/
+
+# ── Temp files ──
+tmp/

@@ -3,13 +3,18 @@
 FROM apache/airflow:2.10.5-python3.11
 ENV AIRFLOW__CORE__EXECUTOR=LocalExecutor \
     AIRFLOW__CORE__LOAD_EXAMPLES=False
-RUN apt-get update || true; \
-    apt-get install -y --no-install-recommends curl ca-certificates || true; \
-    rm -rf /var/lib/apt/lists/* || true; \
+USER root
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
     curl -fsSL https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 \
-        -o /usr/local/bin/docker-compose || true; \
-    chmod +x /usr/local/bin/docker-compose || true; \
-    ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose || true
+        -o /usr/local/bin/docker-compose && \
+    chmod +x /usr/local/bin/docker-compose && \
+    ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose && \
+    curl -fsSL https://dl.k8s.io/release/v1.32.0/bin/linux/amd64/kubectl \
+        -o /usr/local/bin/kubectl && \
+    chmod +x /usr/local/bin/kubectl
+USER airflow
 # from pulling newer transitive deps that would force an airflow 3.x upgrade.
 ARG AIRFLOW_VERSION=2.10.5
 RUN pip install --no-cache-dir --no-deps \

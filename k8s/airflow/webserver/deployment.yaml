@@ -17,6 +17,7 @@ spec:
       labels:
         app: airflow-webserver
     spec:
+      serviceAccountName: airflow-sa
       containers:
       - name: webserver
         image: nyc-airflow:k8s
@@ -40,6 +41,11 @@ spec:
         - name: entrypoint
           mountPath: /docker/entrypoint-airflow.sh
           subPath: entrypoint-airflow.sh
+        - name: project-files
+          mountPath: /repo
+        - name: project-files
+          mountPath: /opt/airflow/dags
+          subPath: airflow/dags
         resources:
           requests:
             cpu: 300m
@@ -52,3 +58,6 @@ spec:
         configMap:
           name: airflow-entrypoint
           defaultMode: 0755
+      - name: project-files
+        persistentVolumeClaim:
+          claimName: project-files-pvc

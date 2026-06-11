@@ -32,7 +32,7 @@ ORDER BY payment_type;
 -- 5) Daily gross revenue and trip count.
 SELECT pickup_date,
        COUNT(*) AS trip_count,
-       SUM(total_amount) AS gross_revenue
+       SUM(total_amount) AS gross_revenue  -- NOTE: tiền theo zone và tiền theo ngày
 FROM hive.mart.fact_trips
 GROUP BY pickup_date
 ORDER BY pickup_date;

@@ -11,6 +11,7 @@ Schedule: manual trigger; set schedule="@hourly" in production.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -34,6 +35,8 @@ DEFAULT_ARGS = {
 REPO_HOST = "/home/dwcks/vsf_gsm/nyc_new"
 REPO_INSIDE_AIRFLOW = Path("/repo")
 
+IS_K8S = os.path.exists("/var/run/secrets/kubernetes.io") or "KUBERNETES_SERVICE_HOST" in os.environ
+
 
 def _run(cmd: list[str]) -> None:
     log.info("exec: %s", " ".join(cmd))
@@ -47,26 +50,42 @@ def _run(cmd: list[str]) -> None:
 
 
 def run_dbt() -> None:
-    _run([
-        "docker", "run", "--rm",
-        "--network", "nyc_new_default",
-        "-v", f"{REPO_HOST}:/opt/project",
-        "-v", "/var/run/docker.sock:/var/run/docker.sock",
-        "nyc-dbt:latest", "entrypoint-dbt",
-    ])
+    if IS_K8S:
+        _run(["kubectl", "delete", "job", "dbt-build", "-n", "nyc-taxi", "--ignore-not-found"])
+        _run(["kubectl", "apply", "-f", "/repo/k8s/dbt/job.yaml", "-n", "nyc-taxi"])
+        _run(["kubectl", "wait", "--for=condition=complete", "job/dbt-build", "-n", "nyc-taxi", "--timeout=180s"])
+    else:
+        _run([
+            "docker", "run", "--rm",
+            "--network", "nyc_new_default",
+            "-v", f"{REPO_HOST}:/opt/project",
+            "-v", "/var/run/docker.sock:/var/run/docker.sock",
+            "nyc-dbt:latest", "entrypoint-dbt",
+        ])
 
 
 def run_superset_bootstrap() -> None:
-    _run([
-        "docker", "exec", "nyc_superset",
-        "bash", "/app/docker/bootstrap_superset.sh",
-    ])
+    if IS_K8S:
+        _run(["kubectl", "exec", "-n", "nyc-taxi", "deploy/superset", "--", "bash", "/app/docker/bootstrap_superset.sh"])
+    else:
+        _run([
+            "docker", "exec", "nyc_superset",
+            "bash", "/app/docker/bootstrap_superset.sh",
+        ])
 
 
 def validate_analytics() -> None:
+    env = os.environ.copy()
+    if IS_K8S:
+        env["TRINO_HOST"] = "svc-trino"
+        env["TRINO_PORT"] = "8080"
+    else:
+        env["TRINO_HOST"] = "trino-coordinator"
+        env["TRINO_PORT"] = "8080"
+
     result = subprocess.run(
         [sys.executable, str(REPO_INSIDE_AIRFLOW / "scripts" / "run_analytics_questions.py")],
-        cwd=REPO_INSIDE_AIRFLOW, capture_output=True, text=True,
+        cwd=REPO_INSIDE_AIRFLOW, capture_output=True, text=True, env=env,
     )
     log.info("stdout: %s", result.stdout)
     if result.returncode != 0:
@@ -79,7 +98,7 @@ with DAG(
     description="Refresh: dbt + Superset + analytics validation",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2026, 1, 1),
-    schedule=None,
+    schedule="@weekly",
     catchup=False,
     max_active_runs=1,
     tags=["nyc", "analytics"],
