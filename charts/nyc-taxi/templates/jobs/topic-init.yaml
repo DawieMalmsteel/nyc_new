@@ -10,15 +10,7 @@ spec:
       - name: topic-init
         image: nyc-pipeline-tools:k8s
         imagePullPolicy: IfNotPresent
-        command:
-        - /bin/bash
-        - -c
-        - |
-          wait-kafka svc-kafka:9092
-          exec python3 /opt/project/scripts/create_kafka_topics.py \
-            --bootstrap-server svc-kafka:9092 \
-            --partitions "${TOPIC_PARTITIONS:-3}" \
-            --replication-factor "${TOPIC_REPLICATION:-1}"
+        command: ["entrypoint-topic-init"]
         volumeMounts:
         - name: project-files
           mountPath: /opt/project

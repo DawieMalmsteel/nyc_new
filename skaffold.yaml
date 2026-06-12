@@ -1,12 +1,5 @@
 apiVersion: skaffold/v4beta3
 kind: Config
-manifests:
-  helm:
-    releases:
-      - name: nyc-taxi
-        chartPath: charts/nyc-taxi
-        namespace: nyc-taxi
-        valuesFiles: [charts/nyc-taxi/values.yaml]
 build:
   local:
     push: false
@@ -14,12 +7,59 @@ build:
     - image: nyc-pipeline-tools
       context: .
       docker: { dockerfile: docker/tools.Dockerfile }
+      sync:
+        manual:
+          - src: "airflow/dags/**/*.py"
+            dest: /opt/project/airflow/dags/
+          - src: "jobs/**/*"
+            dest: /opt/project/jobs/
+          - src: "scripts/**/*"
+            dest: /opt/project/scripts/
+          - src: "dbt/**/*"
+            dest: /opt/project/dbt/
+          - src: "charts/**/*"
+            dest: /opt/project/charts/
     - image: nyc-dbt
       context: .
       docker: { dockerfile: docker/dbt.Dockerfile }
     - image: nyc-airflow
       context: .
       docker: { dockerfile: docker/airflow.Dockerfile }
+deploy:
+  helm:
+    releases:
+      - name: nyc-taxi
+        chartPath: charts/nyc-taxi
+        namespace: nyc-taxi
+        valuesFiles: [charts/nyc-taxi/values.yaml]
+        createNamespace: true
+    hooks:
+      before:
+        - host:
+            command:
+              - bash
+              - -c
+              - |
+                set -euo pipefail
+                cd /home/dwcks/vsf_gsm/nyc_new
+                echo "=== Deleting existing jobs (immutable) ==="
+                kubectl delete job -n nyc-taxi --all --ignore-not-found 2>/dev/null || true
+                echo "=== Syncing project files to kind-worker PVC ==="
+                docker exec kind-worker mkdir -p /mnt/nyc-project
+                # Exclude generated dirs that can change during tar or shouldn't be synced
+                tar cf - \
+                  --exclude='dbt/logs' \
+                  --exclude='dbt/target' \
+                  --exclude='dbt/.user.yml' \
+                  --exclude='.git' \
+                  --exclude='__pycache__' \
+                  --exclude='.mypy_cache' \
+                  --exclude='.pytest_cache' \
+                  --exclude='*.pyc' \
+                  --exclude='*.pyo' \
+                  airflow/dags/ jobs/ scripts/ dbt/ charts/ \
+                  | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
+                echo "=== Sync complete ==="
 portForward:
   - resourceType: service
     resourceName: svc-superset
@@ -56,3 +96,8 @@ portForward:
     namespace: nyc-taxi
     port: 8080
     localPort: 39085
+  - resourceType: service
+    resourceName: svc-postgres-cdc
+    namespace: nyc-taxi
+    port: 5432
+    localPort: 39087

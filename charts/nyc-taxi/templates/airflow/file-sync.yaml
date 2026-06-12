@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: file-sync
+  labels:
+    app: file-sync
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: file-sync
+  template:
+    metadata:
+      labels:
+        app: file-sync
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker
+      containers:
+      - name: sync
+        image: nyc-pipeline-tools:k8s
+        imagePullPolicy: IfNotPresent
+        command: ["sleep", "infinity"]
+        volumeMounts:
+        - name: project-files
+          mountPath: /opt/project
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+      volumes:
+      - name: project-files
+        persistentVolumeClaim:
+          claimName: project-files-pvc

@@ -2,21 +2,24 @@
 
 End-to-end data pipeline for NYC TLC trip records — batch and streaming. Two deployment modes:
 
-- **Kubernetes (kind)** — primary, production-like (3-node cluster, all services in pods)
-- **Docker Compose** — local development (single host, lighter)
+- **Kubernetes (kind)** — primary, production-like (3-node cluster, all services in pods). Deployed via **Skaffold** (`skaffold dev`).
+- **Docker Compose** — local development (single host, lighter). Deployed via **Make** (`make infra-up`).
 
-MinIO S3 as storage layer, Spark for processing, Trino/Hive for catalog, dbt-trino for transformations, Apache Superset for dashboards. On Kubernetes, **Airflow** is the primary orchestrator running the pipeline automatically on schedule; Makefile targets serve local development only.
+MinIO S3 as storage layer, Spark for processing, Trino/Hive for catalog, dbt-trino for transformations, Apache Superset for dashboards. On Kubernetes, **Airflow** is the primary orchestrator running the pipeline automatically on schedule.
 
 ## Architecture
 
 All data starts from **raw Parquet** files downloaded from NYC TLC:
 
-1. **`make k8s-pipeline`** uploads raw Parquet + zone lookup CSV into MinIO S3 (`nyc-raw`, `nyc-lookup`)
+1. **Skaffold deploy hook** syncs project files to PVC, **minio-setup job** uploads raw Parquet + zone lookup CSV into MinIO S3 (`nyc-raw`, `nyc-lookup`)
 2. **Spark Batch** reads from `s3a://nyc-raw`, enriches + validates, splits into **valid** (`nyc-silver/trips/`) and **invalid** (`nyc-quarantine/`)
 3. **Trino Hive catalog** registers external tables pointing at MinIO S3 paths
 4. **dbt-trino** transforms silver data into staging → marts → gold views
 5. **Superset** queries Trino for pre-built charts and dashboard
-6. **Airflow** orchestrates the whole sequence
+6. **Airflow** orchestrates the whole sequence (3 DAGs)
+
+Streaming path: **Kafka** events → **Spark Streaming** (same enrichment logic) → append to `nyc-silver/trips/`.
+CDC path: **Postgres WAL** → **Debezium** → Kafka → **cdc-bridge** → `taxi.trip.events` → Spark Streaming.
 
 Streaming path: **Kafka** events → **Spark Streaming** (same enrichment logic) → append to `nyc-silver/trips/`.
 CDC path: **Postgres WAL** → **Debezium** → Kafka → **cdc-bridge** → `taxi.trip.events` → Spark Streaming.
@@ -59,35 +62,47 @@ flowchart TD
 
 ### Deployment Modes
 
-| Mode | Cluster | Services | Data | Best for |
-|------|---------|----------|------|----------|
-| **Kubernetes (kind)** | 3 nodes (kind) | Pods, Services, PVCs | MinIO S3 | Production-like, all features |
-| **Docker Compose** | Docker host | Containers via compose profiles | MinIO S3 | Local dev, light debugging |
+| Mode | Deploy tool | Cluster | Services | Best for |
+|------|------------|---------|----------|----------|
+| **Kubernetes (kind)** | `skaffold dev` / `skaffold run` | 3 nodes (kind) | Pods via Helm chart | Production-like, all features |
+| **Docker Compose** | `make infra-up` | Docker host | Containers via compose | Local dev, light debugging |
 
 ## Quick Start — Kubernetes (primary)
 
 ```bash
-# 1. Start everything (cluster + images + services + UIs)
-make k8s-start
+# Prerequisites: kind cluster must exist
+# Create if needed: kind create cluster --config kind.yaml
 
-# 2. Trigger the pipeline via Airflow UI or CLI
+# 1. Deploy everything (build images + sync files + Helm install + port-forwards + watch)
+skaffold dev --namespace nyc-taxi
+
+# One-shot deploy (no watch):
+skaffold run --namespace nyc-taxi
+
+# 2. Start port-forwards (if not using skaffold dev)
+make k8s-ui
+
+# 3. Wait for setup jobs to complete (topic-init, postgres-init, minio-setup)
+kubectl wait --for=condition=complete job -n nyc-taxi topic-init --timeout=120s
+
+# 4. Trigger the pipeline via Airflow UI or CLI
 #    Airflow UI: http://localhost:39085 (admin/admin) — DAG: nyc_e2e_pipeline
-#    CLI: make airflow-trigger DAG=nyc_e2e_pipeline
+#    CLI: kubectl exec -n nyc-taxi deploy/airflow-scheduler -- airflow dags trigger nyc_e2e_pipeline
 
-# 3. Verify analytics (10 SQL queries against Trino)
+# 5. Trigger CDC pipeline
+exec -n nyc-taxi deploy/airflow-scheduler -- airflow dags trigger nyc_cdc_pipeline
+
+# 6. Verify analytics (10 SQL queries against Trino)
 make k8s-verify-analytics
 
-# 4. Verify CDC (Postgres count, Debezium status, Kafka topic)
-make k8s-verify-cdc
-
-# 5. Stop (scale down, keep data)
+# 7. Stop (scale down, keep data) — if using skaffold dev, Ctrl+C
 make k8s-stop
 
-# 6. Destroy (delete cluster, all data gone)
+# 8. Destroy (delete cluster, all data gone)
 make k8s-destroy
 ```
 
-After cluster starts, Airflow runs the pipeline automatically on schedule (@monthly for e2e, @weekly for analytics).
+After `skaffold dev` starts, Airflow runs the pipeline automatically on schedule (@monthly for e2e, @weekly for analytics). File changes to `airflow/dags/`, `jobs/`, `scripts/`, `dbt/` are auto-synced to PVC via `file-sync` pod.
 
 ## Quick Start — Docker Compose
 
@@ -123,24 +138,23 @@ make verify-all
 
 ## All Makefile Targets
 
-### Kubernetes (kind)
-| Target | Description |
-|--------|-------------|
-| `k8s-cluster` | Create kind cluster (3 nodes) |
-| `k8s-images` | Build & load custom images into kind |
-| `k8s-deploy` | Deploy all K8s manifests (ordered) |
-| `k8s-start` | Full start: cluster → images → services → UIs |
-| `k8s-stop` | Scale down all services (keep data) |
-| `k8s-destroy` | Delete cluster (services + volumes + images) |
-| `k8s-ui` | Start port-forwards for all UIs (39080-39086) |
-| `k8s-ui-stop` | Stop all port-forwards |
-| `k8s-pipeline` | Run full pipeline: init → spark → trino → dbt → bridge → verify |
-| `k8s-status` | Show pod status |
-| `k8s-logs JOB=<name>` | Tail logs for a job |
-| `k8s-verify` | Verify row counts via Trino |
-| `k8s-verify-analytics` | Run 10 analytics SQL queries |
-| `k8s-verify-cdc` | Verify CDC pipeline (Postgres, Debezium, Kafka) |
-| `k8s-clean` | Clean MinIO data + delete jobs (fresh start) |
+### Kubernetes (kind) via Skaffold
+| Target / Command | Description |
+|-----------------|-------------|
+| `skaffold dev --namespace nyc-taxi` | **Primary** — build, deploy, port-forward, watch, auto-sync |
+| `skaffold run --namespace nyc-taxi` | One-shot deploy (no watch) |
+| `skaffold build --namespace nyc-taxi` | Build images only |
+| `make k8s-cluster` | Create kind cluster (3 nodes) |
+| `make k8s-images` | Build & load custom images into kind (legacy) |
+| `make k8s-ui` | Start port-forwards for all UIs (39080-39086) |
+| `make k8s-ui-stop` | Stop all port-forwards |
+| `make k8s-destroy` | Delete cluster (services + volumes + images) |
+| `make k8s-status` | Show pod status |
+| `make k8s-logs JOB=<name>` | Tail logs for a job |
+| `make k8s-verify` | Verify row counts via Trino |
+| `make k8s-verify-analytics` | Run 10 analytics SQL queries |
+| `make k8s-verify-cdc` | Verify CDC pipeline (Postgres, Debezium, Kafka) |
+| `make k8s-clean` | Clean MinIO data + delete jobs (fresh start) |
 
 ### Docker Compose
 | Target | Description |
@@ -177,7 +191,7 @@ make verify-all
 
 ## UIs & Port-forwards
 
-Kubernetes mode uses `kubectl port-forward` — ports **39080-39086** (avoids kind NodePort 38080 range).
+Kubernetes mode uses `skaffold portForward` or `kubectl port-forward` — ports **39080-39087** (avoids kind NodePort 38080 range).
 
 | Service | URL | Port | Credentials |
 |---------|-----|------|-------------|
@@ -188,8 +202,11 @@ Kubernetes mode uses `kubectl port-forward` — ports **39080-39086** (avoids ki
 | Trino | http://localhost:39084 | 39084 | — |
 | Airflow | http://localhost:39085 | 39085 | `admin` / `admin` |
 | MinIO Console | http://localhost:39086 | 39086 | `minio` / `minio123` |
+| Postgres CDC | localhost:39087 | 39087 | `postgres` / `postgres` |
 
 Docker Compose mode uses published ports directly (8088, 9000/9001, 8083, etc.).
+
+Port-forwards are managed automatically by `skaffold dev`. If not using skaffold, start via `make k8s-ui`.
 
 ## Batch Results
 
@@ -226,8 +243,9 @@ MinIO S3 buckets:
 | Catalog | Trino 435 | Hive connector + S3 connector, reads parquet from MinIO |
 | Transformation | dbt-trino | 15 views (staging → marts → gold), 9 tests |
 | Visualization | Apache Superset 4.0.0 | Trino-backed dashboard with charts |
-| Orchestration | Airflow 2.10.5 | Primary orchestrator on K8s (auto-scheduled DAGs); Makefile targets for local dev. DAGs: `nyc_e2e_pipeline`, `nyc_analytics_refresh` |
+| Orchestration | Airflow 2.10.5 | **3 DAGs**: `nyc_e2e_pipeline` (@monthly), `nyc_cdc_pipeline` (@monthly), `nyc_analytics_refresh` (@weekly) |
 | CDC | Debezium 2.5 + Postgres 16 | WAL-based CDC, bridge to standard event format |
+| Deployment | **Skaffold v2.21.0** + Helm | `skaffold dev` — build, deploy, sync, port-forward, watch |
 
 ## CDC Pipeline
 
@@ -243,16 +261,37 @@ CDC bridge runs as a poll-based loop with idle timeout (5s) — exits automatica
 ## Development Notes
 
 - **No host Python required** — all code runs in Docker/K8s containers.
-- **Kubernetes**: Use `make k8s-logs JOB=<name>` to debug jobs. After code changes, sync to PVC:
-  `tar cf - scripts/ | docker exec -i kind-worker tar xf - -C /mnt/nyc-project`
-- **Spark hybrid deployment** (K8s jobs with Docker Compose infra): `make k8s-pipeline`
-  reads MinIO from within the kind network while compose services run on host.
+- **Kubernetes (Skaffold)**: `skaffold dev --namespace nyc-taxi` — tự động build, deploy, sync files, port-forward.
+  Khi code thay đổi, `skaffold sync` push thẳng vào `file-sync` pod → PVC → Airflow nhận thay đổi ngay.
+- **PVC Sync manual** (khi không dùng skaffold):
+  ```bash
+  cd /home/dwcks/vsf_gsm/nyc_new
+  tar cf - --exclude='dbt/logs' --exclude='dbt/target' --exclude='.git' \
+    --exclude='__pycache__' --exclude='*.pyc' \
+    airflow/dags/ jobs/ scripts/ dbt/ charts/ \
+    | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
+  ```
 - **Spark S3A connector** uses `--packages hadoop-aws:3.3.4,aws-java-sdk-bundle:1.12.262`
-  via `spark-submit` CLI (not `spark.jars.packages`). Ivy cache shared on PVC for speed.
+  via `spark-submit` CLI (not `spark.jars.packages`). Ivy cache shared on PVC (`/opt/project/.ivy2/`) for speed.
 - **S3 commit fix**: `spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2`
   required because MinIO does not support atomic S3 rename.
 - **MinIO credentials**: `minio` / `minio123`. Spark uses `s3a://`, Trino uses `s3://`.
 - **All dbt models** are `materialized='view'` — Hive file-based HMS does not support `RENAME TABLE`.
 - **Port-forward survival**: `scripts/k8s_ui.sh` uses `setsid -f` so processes survive `make` exit.
-- **Kafka bootstrap**: Host `localhost:29092`, containers `nyc_kafka:9092`, K8s `svc-kafka:9092`.
-- **Airflow DAG management**: DAGs `nyc_e2e_pipeline` (@monthly) and `nyc_analytics_refresh` (@weekly) run automatically on Kubernetes. Trigger manually via Airflow UI (http://localhost:39085) or `make airflow-trigger DAG=<name>`.
+  Skaffold automatically manages port-forwards in `dev` mode.
+- **Kafka bootstrap**: Docker Compose `localhost:29092`, container `nyc_kafka:9092`, **K8s `svc-kafka:9092`**
+  (⚠️ không dùng `kafka:9092` — service name trong K8s namespace `nyc-taxi` có prefix `svc-`).
+- **Airflow DAG management**: 3 DAGs tự động chạy trên lịch:
+  - `nyc_e2e_pipeline` (@monthly): Spark batch + streaming → Trino → dbt → Superset
+  - `nyc_cdc_pipeline` (@monthly): Seed Postgres → Debezium → bridge CDC → Kafka
+  - `nyc_analytics_refresh` (@weekly): dbt → Superset refresh → analytics check
+  
+  Trigger manual: Airflow UI (http://localhost:39085) hoặc:
+  ```bash
+  kubectl exec -n nyc-taxi deploy/airflow-scheduler -- airflow dags trigger nyc_e2e_pipeline
+  ```
+- **Skaffold file-sync hot-reload**: `file-sync` pod (runs root, PVC mounted) nhận file từ `skaffold sync`.
+  Sync rules trong `skaffold.yaml` map `airflow/dags/`, `jobs/`, `scripts/`, `dbt/`, `charts/` → `/opt/project/...`.
+- **Postgres init**: Dùng Python `psycopg2` (không cần `psql` / postgresql-client).
+- **topic-init**: Dùng `wait-kafka` (TCP wait script, có sẵn trong tools image) + `svc-kafka:9092`.
+- **Helm chart**: Tất cả manifests đều trong `charts/nyc-taxi/templates/`. Deploy via `deploy.helm` trong skaffold.yaml.

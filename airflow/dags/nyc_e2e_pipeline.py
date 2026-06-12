@@ -170,7 +170,7 @@ with DAG(
             "--conf", "spark.scheduler.mode=FAIR",
             "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
             "/opt/project/jobs/spark_stream_taxi_events.py",
-            "--bootstrap-server", "kafka:9092",
+            "--bootstrap-server", "svc-kafka:9092",
             "--topic", "taxi.trip.events",
             "--lookup-path", "s3a://nyc-lookup/taxi_zone_lookup.csv",
             "--silver-path", "s3a://nyc-silver/trips",

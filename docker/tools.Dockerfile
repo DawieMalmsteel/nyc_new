@@ -15,9 +15,10 @@ WORKDIR /opt/project
 # CDC bridge/seed dependencies
 RUN pip install --no-cache-dir psycopg2-binary sqlalchemy kafka-python trino pandas pyarrow
 # Copy entrypoint scripts and create symlinks (remove .sh suffix for K8s compat)
-COPY docker/entrypoint-*.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint-*.sh && \
-    for f in /usr/local/bin/entrypoint-*.sh; do ln -s "$f" "${f%.sh}"; done
+# Copy all .sh scripts and create symlinks (strip .sh suffix for K8s entrypoints)
+COPY docker/*.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/*.sh && \
+    for f in /usr/local/bin/*.sh; do ln -s "$f" "${f%.sh}"; done
 
 
 CMD ["bash"]
