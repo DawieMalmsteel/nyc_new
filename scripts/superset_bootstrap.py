@@ -4,10 +4,12 @@ superset_bootstrap.py — Register DB, dataset, 4 charts, 1 dashboard via REST A
 Idempotent: skips resources that already exist.
 """
 import json
-import urllib.request
+import os
 import sys
+import urllib.request
 
-BASE = "http://localhost:8088/api/v1"
+BASE = os.environ.get("SUPERSET_URL", "http://localhost:8088") + "/api/v1"
+TRINO_URI = os.environ.get("TRINO_URI", "trino://analytics@trino-coordinator:8080/hive/mart")
 
 
 def _req(method, path, data=None):
@@ -40,7 +42,7 @@ def main():
     db_id = next((r["id"] for r in dbs.get("result", []) if r["database_name"] == "NYC Trino"), None)
     if db_id is None:
         resp = post("/database/", {"database_name": "NYC Trino",
-                                   "sqlalchemy_uri": "trino://analytics@trino-coordinator:8080/hive/mart"})
+                                   "sqlalchemy_uri": TRINO_URI})
         db_id = resp["id"]
         print(f"  DB created id={db_id}")
     else:

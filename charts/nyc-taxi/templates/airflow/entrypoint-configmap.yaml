@@ -23,6 +23,14 @@ data:
         exec airflow scheduler
         ;;
       init)
+        echo "=== Waiting for PostgreSQL at svc-airflow-postgres:5432 ==="
+        # Retry loop because headless service DNS may not be ready at startup
+        for i in $(seq 1 30); do
+          python -c "from psycopg2 import connect; connect('${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}')" 2>/dev/null \
+            && echo "PostgreSQL ready after ${i}s" && break
+          echo "Waiting for PostgreSQL... (${i}s)"
+          sleep 2
+        done
         airflow db migrate
         airflow users create \
           --username admin --firstname Admin --lastname User \

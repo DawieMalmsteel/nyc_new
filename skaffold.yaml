@@ -86,7 +86,7 @@ deploy:
                   http://localhost:39082; do
                   (xdg-open "$url" 2>/dev/null || true) &
                 done
-                wait"
+                wait
 portForward:
   - resourceType: service
     resourceName: svc-superset

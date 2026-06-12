@@ -7,14 +7,9 @@ Production-Grade design utilizing KubernetesPodOperator (EKS & Kind Ready).
 from __future__ import annotations
 
 import logging
-import os
-import subprocess
-import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
 from kubernetes.client import models as k8s
 
@@ -27,12 +22,6 @@ DEFAULT_ARGS = {
     "execution_timeout": timedelta(minutes=30),
 }
 
-# Absolute host path (resolved on host when binding into spawned containers).
-REPO_HOST = "/home/dwcks/vsf_gsm/nyc_new"
-REPO_INSIDE_AIRFLOW = Path("/repo")
-
-IS_K8S = os.path.exists("/var/run/secrets/kubernetes.io") or "KUBERNETES_SERVICE_HOST" in os.environ
-
 # Định nghĩa cấu hình Volume Mount dùng chung cho các K8s Pods
 project_volume = k8s.V1Volume(
     name="project-files",
@@ -42,71 +31,6 @@ project_volume_mount = k8s.V1VolumeMount(
     name="project-files",
     mount_path="/opt/project"
 )
-
-
-def _run(cmd: list[str]) -> None:
-    log.info("exec: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.stdout:
-        log.info("stdout: %s", result.stdout)
-    if result.stderr:
-        log.error("stderr: %s", result.stderr)
-    if result.returncode != 0:
-        raise RuntimeError(f"command failed (rc={result.returncode}): {' '.join(cmd)}")
-
-
-def run_superset_bootstrap() -> None:
-    """Khởi tạo cấu hình cho Superset Pod."""
-    if IS_K8S:
-        # Sử dụng native K8s client API để thực thi lệnh trực tiếp bên trong container (EKS Ready)
-        from kubernetes import client, config
-        from kubernetes.stream import stream
-        
-        config.load_incluster_config()
-        api = client.CoreV1Api()
-        
-        # Tìm đúng Pod Superset đang chạy
-        pods = api.list_namespaced_pod(namespace="nyc-taxi", label_selector="app=superset")
-        if not pods.items:
-            raise RuntimeError("Superset pod not found in namespace 'nyc-taxi'")
-        pod_name = pods.items[0].metadata.name
-        
-        # Thực thi file script cấu hình của Superset
-        exec_command = ["bash", "/app/docker/bootstrap_superset.sh"]
-        resp = stream(
-            api.connect_get_namespaced_pod_exec,
-            pod_name,
-            "nyc-taxi",
-            command=exec_command,
-            stderr=True, stdin=False,
-            stdout=True, tty=False
-        )
-        log.info("Superset Bootstrap Response: %s", resp)
-    else:
-        _run([
-            "docker", "exec", "nyc_superset",
-            "bash", "/app/docker/bootstrap_superset.sh",
-        ])
-
-
-def validate_analytics() -> None:
-    """Kiểm tra khâu cuối cùng."""
-    env = os.environ.copy()
-    if IS_K8S:
-        env["TRINO_HOST"] = "svc-trino"
-        env["TRINO_PORT"] = "8080"
-    else:
-        env["TRINO_HOST"] = "trino-coordinator"
-        env["TRINO_PORT"] = "8080"
-
-    result = subprocess.run(
-        [sys.executable, str(REPO_INSIDE_AIRFLOW / "scripts" / "run_analytics_questions.py")],
-        cwd=REPO_INSIDE_AIRFLOW, capture_output=True, text=True, env=env,
-    )
-    log.info("stdout: %s", result.stdout)
-    if result.returncode != 0:
-        log.error("stderr: %s", result.stderr)
-        raise RuntimeError(f"analytics failed:\n{result.stderr}")
 
 
 with DAG(
@@ -237,9 +161,45 @@ with DAG(
         service_account_name="airflow-sa"
     )
 
-    # 5. Superset Bootstrap & Analytics Check
-    superset_bootstrap = PythonOperator(task_id="superset_bootstrap", python_callable=run_superset_bootstrap)
-    analytics_check = PythonOperator(task_id="analytics_check", python_callable=validate_analytics)
+    # 5. Superset Bootstrap
+    superset_bootstrap = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:k8s",
+        image_pull_policy="IfNotPresent",
+        name="superset-bootstrap",
+        task_id="superset_bootstrap",
+        cmds=["python3"],
+        arguments=["/opt/project/scripts/superset_bootstrap.py"],
+        env_vars=[
+            k8s.V1EnvVar(name="SUPERSET_URL", value="http://svc-superset:8088"),
+            k8s.V1EnvVar(name="TRINO_URI", value="trino://analytics@svc-trino:8080/hive/mart"),
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa"
+    )
+
+    # 6. Analytics Check
+    analytics_check = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:k8s",
+        image_pull_policy="IfNotPresent",
+        name="analytics-check",
+        task_id="analytics_check",
+        cmds=["python3"],
+        arguments=["/opt/project/scripts/run_analytics_questions.py"],
+        env_vars=[
+            k8s.V1EnvVar(name="TRINO_HOST", value="svc-trino"),
+            k8s.V1EnvVar(name="TRINO_PORT", value="8080"),
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa"
+    )
 
     # Khai báo luồng phụ thuộc tuyến tính tuyệt đẹp
     spark_batch >> trino_bootstrap
