@@ -60,6 +60,33 @@ deploy:
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
                 echo "=== Sync complete ==="
+      after:
+        - host:
+            command:
+              - bash
+              - -c
+              - |
+                sleep 5
+                echo ""
+                echo "==================== 🚀 PIPELINE UIs ===================="
+                echo "  Superset     http://localhost:39080    admin/admin"
+                echo "  MinIO API    http://localhost:39081    minio/minio123"
+                echo "  Kafka UI     http://localhost:39082"
+                echo "  Spark        http://localhost:39083"
+                echo "  Trino        http://localhost:39084"
+                echo "  Airflow      http://localhost:39085    admin/admin"
+                echo "  MinIO Admin  http://localhost:39086    minio/minio123"
+                echo "  Postgres CDC  localhost:39087          postgres/postgres"
+                echo "========================================================="
+                echo ""
+                # Try to open browsers (suppress errors on headless/WSL)
+                for url in \
+                  http://localhost:39085 \
+                  http://localhost:39080 \
+                  http://localhost:39082; do
+                  (xdg-open "$url" 2>/dev/null || true) &
+                done
+                wait"
 portForward:
   - resourceType: service
     resourceName: svc-superset
