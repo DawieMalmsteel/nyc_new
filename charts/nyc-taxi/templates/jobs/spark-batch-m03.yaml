@@ -1,7 +1,6 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  namespace: nyc-taxi
   name: spark-batch-m03
   labels:
     app: spark-batch

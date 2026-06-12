@@ -1,7 +1,6 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  namespace: nyc-taxi
   name: trino-bootstrap
 spec:
   ttlSecondsAfterFinished: 300

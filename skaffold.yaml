@@ -5,6 +5,7 @@ manifests:
     releases:
       - name: nyc-taxi
         chartPath: charts/nyc-taxi
+        namespace: nyc-taxi
         valuesFiles: [charts/nyc-taxi/values.yaml]
 build:
   local:
@@ -19,3 +20,39 @@ build:
     - image: nyc-airflow
       context: .
       docker: { dockerfile: docker/airflow.Dockerfile }
+portForward:
+  - resourceType: service
+    resourceName: svc-superset
+    namespace: nyc-taxi
+    port: 8088
+    localPort: 39080
+  - resourceType: service
+    resourceName: svc-minio
+    namespace: nyc-taxi
+    port: 9000
+    localPort: 39081
+  - resourceType: service
+    resourceName: svc-minio
+    namespace: nyc-taxi
+    port: 9001
+    localPort: 39086
+  - resourceType: service
+    resourceName: svc-kafka-ui
+    namespace: nyc-taxi
+    port: 8080
+    localPort: 39082
+  - resourceType: service
+    resourceName: svc-spark-master
+    namespace: nyc-taxi
+    port: 8081
+    localPort: 39083
+  - resourceType: service
+    resourceName: svc-trino
+    namespace: nyc-taxi
+    port: 8080
+    localPort: 39084
+  - resourceType: service
+    resourceName: svc-airflow-webserver
+    namespace: nyc-taxi
+    port: 8080
+    localPort: 39085
