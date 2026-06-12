@@ -36,7 +36,7 @@ IS_K8S = os.path.exists("/var/run/secrets/kubernetes.io") or "KUBERNETES_SERVICE
 # Định nghĩa cấu hình Volume Mount dùng chung cho các K8s Pods
 project_volume = k8s.V1Volume(
     name="project-files",
-    persistent_volume_claim=k8s.V1PersistentVolumeClaimVolumeSource(claimName="project-files-pvc")
+    persistent_volume_claim=k8s.V1PersistentVolumeClaimVolumeSource(claim_name="project-files-pvc")
 )
 project_volume_mount = k8s.V1VolumeMount(
     name="project-files",
