@@ -67,6 +67,25 @@ with DAG(
         service_account_name="airflow-sa"
     )
 
+    gold_export = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:k8s",
+        image_pull_policy="IfNotPresent",
+        name="gold-export",
+        task_id="gold_export",
+        cmds=["python3"],
+        arguments=["/opt/project/scripts/export_gold_to_minio.py"],
+        env_vars=[
+            k8s.V1EnvVar(name="TRINO_HOST", value="svc-trino"),
+            k8s.V1EnvVar(name="TRINO_PORT", value="8080"),
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa"
+    )
+
     superset_bootstrap = KubernetesPodOperator(
         namespace="nyc-taxi",
         image="nyc-pipeline-tools:k8s",
@@ -106,4 +125,4 @@ with DAG(
     )
 
     # Luồng tuần tự
-    dbt_build >> superset_bootstrap >> analytics_check
+    dbt_build >> gold_export >> superset_bootstrap >> analytics_check

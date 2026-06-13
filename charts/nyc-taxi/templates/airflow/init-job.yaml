@@ -23,6 +23,8 @@ spec:
           value: "False"
         - name: AIRFLOW__CORE__EXECUTOR
           value: LocalExecutor
+        - name: AIRFLOW__WEBSERVER__SECRET_KEY
+          value: "nyc-taxi-dev-secret-key-change-in-production"
         - name: AIRFLOW_UID
           value: "0"
         - name: AIRFLOW_GID

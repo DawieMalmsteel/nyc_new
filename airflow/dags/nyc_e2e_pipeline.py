@@ -161,7 +161,27 @@ with DAG(
         service_account_name="airflow-sa"
     )
 
-    # 5. Superset Bootstrap
+    # 5. Gold Export
+    gold_export = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:k8s",
+        image_pull_policy="IfNotPresent",
+        name="gold-export",
+        task_id="gold_export",
+        cmds=["python3"],
+        arguments=["/opt/project/scripts/export_gold_to_minio.py"],
+        env_vars=[
+            k8s.V1EnvVar(name="TRINO_HOST", value="svc-trino"),
+            k8s.V1EnvVar(name="TRINO_PORT", value="8080"),
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa"
+    )
+
+    # 6. Superset Bootstrap
     superset_bootstrap = KubernetesPodOperator(
         namespace="nyc-taxi",
         image="nyc-pipeline-tools:k8s",
@@ -181,7 +201,7 @@ with DAG(
         service_account_name="airflow-sa"
     )
 
-    # 6. Analytics Check
+    # 7. Analytics Check
     analytics_check = KubernetesPodOperator(
         namespace="nyc-taxi",
         image="nyc-pipeline-tools:k8s",
@@ -205,4 +225,4 @@ with DAG(
     spark_batch >> trino_bootstrap
     spark_streaming >> trino_bootstrap
     
-    trino_bootstrap >> dbt_build >> superset_bootstrap >> analytics_check
+    trino_bootstrap >> dbt_build >> gold_export >> superset_bootstrap >> analytics_check

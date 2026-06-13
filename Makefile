@@ -229,6 +229,10 @@ dbt-run:                       ## Run models only
 dbt-test:                      ## Run tests only
 	docker compose --profile tools --profile dbt run --rm dbt dbt test
 
+## Gold Export
+gold-export:                   ## Export gold datasets to MinIO S3 via Trino CTAS
+	docker compose --profile tools --profile trino run --rm gold-export
+
 ## Superset
 superset-bootstrap:            ## Register DB, charts, dashboard
 	docker exec -i nyc_superset python3 < scripts/superset_bootstrap.py
@@ -259,17 +263,19 @@ verify-cdc:                    ## Verify CDC pipeline
 	@docker compose exec -T kafka kafka-run-class kafka.tools.GetOffsetShell --bootstrap-server kafka:9092 --topic nyc_cdc.public.trips --time -1 2>/dev/null | cut -d: -f3 | xargs -I{} echo "Messages: {}"
 
 verify-all:                    ## Full pipeline verification
-	@echo "=== 1/6 Spark batch ==="
+	@echo "=== 1/7 Spark batch ==="
 	$(MAKE) spark-batch
-	@echo "=== 2/6 Trino bootstrap ==="
+	@echo "=== 2/7 Trino bootstrap ==="
 	$(MAKE) trino-bootstrap
-	@echo "=== 3/6 dbt build ==="
+	@echo "=== 3/7 dbt build ==="
 	$(MAKE) dbt-build
-	@echo "=== 4/6 Mart verification ==="
+	@echo "=== 4/7 Gold export ==="
+	$(MAKE) gold-export
+	@echo "=== 5/7 Mart verification ==="
 	$(MAKE) verify-mart
-	@echo "=== 5/6 Analytics ==="
+	@echo "=== 6/7 Analytics ==="
 	$(MAKE) verify-analytics
-	@echo "=== 6/6 Superset ==="
+	@echo "=== 7/7 Superset ==="
 	$(MAKE) superset-check
 	@echo "=== ALL VERIFIED ==="
 

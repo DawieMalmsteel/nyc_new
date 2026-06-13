@@ -22,7 +22,7 @@ spec:
             echo "waiting for MinIO..."
             sleep 2
           done
-          for bucket in nyc-raw nyc-silver nyc-quarantine nyc-lookup; do
+          for bucket in nyc-raw nyc-silver nyc-quarantine nyc-lookup nyc-gold; do
             if mc ls "nyc/${bucket}" >/dev/null 2>&1; then
               echo "bucket '${bucket}' exists"
             else

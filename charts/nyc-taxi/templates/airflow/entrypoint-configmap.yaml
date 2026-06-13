@@ -6,6 +6,7 @@ data:
   entrypoint-airflow.sh: |
     #!/usr/bin/env bash
     set -uo pipefail
+
     for d in /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins \
              /opt/airflow/logs/scheduler /opt/airflow/logs/dag_processor_manager \
              /opt/airflow/logs/celery /opt/airflow/logs/dag_processor \
@@ -15,22 +16,40 @@ data:
     done
     chown -R 50000:0 /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins 2>/dev/null || true
     rm -f /opt/airflow/airflow.cfg
+
+    # Wait until PostgreSQL is reachable
+    wait_for_db() {
+      local host="${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN#*@}"
+      host="${host%%:*}"
+      echo "=== Waiting for PostgreSQL at ${host}:5432 ==="
+      # Phase 1: wait for DNS
+      for i in $(seq 1 30); do
+        getent hosts "$host" >/dev/null 2>&1 && break
+        echo "  DNS not ready... (${i}s)"
+        sleep 2
+      done
+      # Phase 2: wait for psycopg2 connect (max 60s)
+      for i in $(seq 1 30); do
+        python -c "from psycopg2 import connect; connect('${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}')" 2>/dev/null \
+          && echo "  PostgreSQL reachable after ${i}s" && return 0
+        echo "  Connecting... (${i}s)"
+        sleep 2
+      done
+      echo "ERROR: PostgreSQL not available after timeout" >&2
+      return 1
+    }
+
     case "${AIRFLOW_ROLE:-webserver}" in
       webserver)
+        wait_for_db
         exec airflow webserver
         ;;
       scheduler)
+        wait_for_db
         exec airflow scheduler
         ;;
       init)
-        echo "=== Waiting for PostgreSQL at svc-airflow-postgres:5432 ==="
-        # Retry loop because headless service DNS may not be ready at startup
-        for i in $(seq 1 30); do
-          python -c "from psycopg2 import connect; connect('${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}')" 2>/dev/null \
-            && echo "PostgreSQL ready after ${i}s" && break
-          echo "Waiting for PostgreSQL... (${i}s)"
-          sleep 2
-        done
+        wait_for_db
         airflow db migrate
         airflow users create \
           --username admin --firstname Admin --lastname User \
