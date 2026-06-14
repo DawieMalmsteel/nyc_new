@@ -34,73 +34,7 @@ GOLD_PATH = "s3://nyc-gold"
 # ──────────────────────────────────────────────
 
 GOLD_DATASETS = [
-    # ── 1. Fact Tables ──
-    # NOTE: fact_trips_enriched first so dbt gold_fact_trips view settles
-    {
-        "name": "fact_trips_enriched",
-        "partitioned": True,
-        "sql": """
-            SELECT
-                trip_id, source_file, vendor_id,
-                pickup_ts, dropoff_ts, passenger_count,
-                trip_distance, rate_code_id, payment_type,
-                fare_amount, extra, mta_tax, tip_amount,
-                tolls_amount, improvement_surcharge, total_amount,
-                tip_amount / NULLIF(total_amount, 0) AS tip_rate,
-                date_diff('second', pickup_ts, dropoff_ts) AS trip_duration_sec,
-                pickup_location_id, dropoff_location_id,
-                pickup_zone, dropoff_zone,
-                pickup_borough, dropoff_borough,
-                pickup_service_zone, dropoff_service_zone,
-                -- Enrichment columns
-                CASE
-                    WHEN pickup_zone IN ('JFK Airport','LaGuardia Airport','Newark Airport')
-                      OR dropoff_zone IN ('JFK Airport','LaGuardia Airport','Newark Airport')
-                    THEN TRUE ELSE FALSE
-                END AS is_airport_trip,
-                CASE
-                    WHEN trip_distance < 1 THEN 'very_short'
-                    WHEN trip_distance < 3 THEN 'short'
-                    WHEN trip_distance < 10 THEN 'medium'
-                    ELSE 'long'
-                END AS trip_distance_category,
-                CASE
-                    WHEN pickup_hour_ts >= TIMESTAMP '2024-01-01 06:00'
-                     AND pickup_hour_ts < TIMESTAMP '2024-01-01 10:00'
-                    THEN 'morning_rush'
-                    WHEN pickup_hour_ts >= TIMESTAMP '2024-01-01 16:00'
-                     AND pickup_hour_ts < TIMESTAMP '2024-01-01 20:00'
-                    THEN 'evening_rush'
-                    WHEN pickup_hour_ts >= TIMESTAMP '2024-01-01 22:00'
-                      OR pickup_hour_ts < TIMESTAMP '2024-01-01 05:00'
-                    THEN 'late_night'
-                    ELSE 'regular'
-                END AS trip_time_category,
-                -- Partition columns MUST be last
-                pickup_year, pickup_month
-            FROM hive.mart.gold_fact_trips
-        """,
-    },
-    {
-        "name": "fact_trips",
-        "partitioned": True,
-        "sql": """
-            SELECT
-                trip_id, source_file, vendor_id,
-                pickup_ts, dropoff_ts, passenger_count,
-                trip_distance, rate_code_id, payment_type,
-                fare_amount, extra, mta_tax, tip_amount,
-                tolls_amount, improvement_surcharge, total_amount,
-                tip_amount / NULLIF(total_amount, 0) AS tip_rate,
-                date_diff('second', pickup_ts, dropoff_ts) AS trip_duration_sec,
-                pickup_location_id, dropoff_location_id,
-                pickup_zone, dropoff_zone,
-                pickup_borough, dropoff_borough,
-                pickup_service_zone, dropoff_service_zone,
-                pickup_year, pickup_month
-            FROM hive.mart.gold_fact_trips
-        """,
-    },
+    # ── 1. Fact Tables (aggregated — raw 5.4M-row tables served directly from Trino views) ──
     {
         "name": "fact_trips_daily",
         "partitioned": False,

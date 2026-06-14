@@ -19,8 +19,7 @@ TRINO_URI = os.environ.get(
 
 # ── Gold tables grouped by category ──
 GOLD_TABLES = [
-    # Fact tables
-    ("nyc_gold", "fact_trips_enriched"),
+    # Fact tables (aggregates only — raw 5.4M-row tables via Trino)
     ("nyc_gold", "fact_trips_daily"),
     ("nyc_gold", "fact_trips_hourly"),
     ("nyc_gold", "fact_trips_hourly_zone"),
