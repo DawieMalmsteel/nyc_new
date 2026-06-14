@@ -11,8 +11,10 @@ for i in {1..60}; do
   sleep 2
 done
 
+# Ensure Trino tables exist (idempotent: CREATE TABLE IF NOT EXISTS).
+python3 /opt/project/scripts/trino_register.py
+
 # Sync hive partition metadata so the source views see new data.
-cd /opt/project
 python3 /opt/project/scripts/trino_sync_partitions.py
 
 cd /opt/project/dbt
