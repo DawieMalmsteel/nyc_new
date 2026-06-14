@@ -895,7 +895,12 @@ def _add_parquet_extensions(name: str) -> None:
     try:
         from minio import Minio       # type: ignore[import-untyped]
     except ImportError:
-        return  # minio not available in this context
+        print("[rename] minio library not found, installing...")
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "minio", "-q",
+                               "--disable-pip-version-check"])
+        from minio import Minio       # type: ignore[import-untyped]
+
     try:
         mc = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
                     secret_key=MINIO_SECRET_KEY, secure=False)
@@ -907,13 +912,15 @@ def _add_parquet_extensions(name: str) -> None:
             if src.endswith('.parquet') or src.endswith('/'):
                 continue
             dst = src + '.parquet'
-            mc.copy_object(MINIO_BUCKET, dst, f"{MINIO_BUCKET}/{src}")
+            # minio-py v7+ requires CopySource
+            from minio.commonconfig import CopySource
+            mc.copy_object(MINIO_BUCKET, dst, CopySource(MINIO_BUCKET, src))
             mc.remove_object(MINIO_BUCKET, src)
             renamed += 1
         if renamed:
             print(f"[export] {name}: renamed {renamed} files -> .parquet")
-    except Exception:
-        pass  # best-effort; Trino reads files fine without extension
+    except Exception as e:
+        print(f"[export] {name}: rename skipped ({e})")
 
 
 def main() -> int:
