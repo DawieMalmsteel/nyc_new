@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: trino
+  name: trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trino
+  template:
+    metadata:
+      labels:
+        app: trino
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker
+      containers:
+      - image: trinodb/trino:435
+        imagePullPolicy: IfNotPresent
+        name: trino
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+        volumeMounts:
+        - mountPath: /etc/trino/config.properties
+          name: trino-main-config
+          subPath: config.properties
+        - mountPath: /etc/trino/node.properties
+          name: trino-main-config
+          subPath: node.properties
+        - mountPath: /etc/trino/jvm.config
+          name: trino-main-config
+          subPath: jvm.config
+        - mountPath: /etc/trino/log.properties
+          name: trino-main-config
+          subPath: log.properties
+        - mountPath: /etc/trino/catalog/hive.properties
+          name: trino-catalog
+          subPath: hive.properties
+        - mountPath: /data
+          name: trino-data
+        - mountPath: /opt/project/data
+          name: raw-data
+      volumes:
+      - name: raw-data
+        persistentVolumeClaim:
+          claimName: raw-data-pvc
+      - configMap:
+          name: trino-config
+          items:
+          - key: config.properties
+            path: config.properties
+          - key: node.properties
+            path: node.properties
+          - key: jvm.config
+            path: jvm.config
+          - key: log.properties
+            path: log.properties
+        name: trino-main-config
+      - configMap:
+          name: trino-config
+          items:
+          - key: hive.properties
+            path: hive.properties
+        name: trino-catalog
+      - emptyDir: {}
+        name: trino-data

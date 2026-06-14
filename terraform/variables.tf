@@ -32,7 +32,7 @@ variable "enable_ministack_buckets" {
 variable "bucket_names" {
   description = "Danh sách S3 buckets cần tạo trên MiniStack cho pipeline NYC Taxi."
   type        = set(string)
-  default     = ["nyc-raw", "nyc-silver", "nyc-quarantine", "nyc-lookup"]
+  default     = ["nyc-raw", "nyc-silver", "nyc-quarantine", "nyc-lookup", "nyc-gold"]
 }
 
 variable "kube_config_path" {

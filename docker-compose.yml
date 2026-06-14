@@ -59,7 +59,7 @@ services:
       - |
         set -euo pipefail
         mc alias set nyc http://minio:9000 minio minio123
-        for bucket in nyc-raw nyc-silver nyc-quarantine nyc-lookup; do
+        for bucket in nyc-raw nyc-silver nyc-quarantine nyc-lookup nyc-gold; do
           if mc ls "nyc/$${bucket}" >/dev/null 2>&1; then
             echo "bucket '$${bucket}' exists"
           else
@@ -275,6 +275,24 @@ services:
       DBT_PROFILES_DIR: /opt/project/dbt
       TRINO_HOST: trino-coordinator
     command: ["entrypoint-dbt"]
+    restart: "no"
+
+  gold-export:
+    build:
+      context: .
+      dockerfile: docker/tools.Dockerfile
+    image: nyc-pipeline-tools:latest
+    container_name: nyc_gold_export
+    profiles: ["tools", "trino"]
+    depends_on:
+      - trino-coordinator
+    volumes:
+      - ./:/opt/project
+    working_dir: /opt/project
+    environment:
+      TRINO_HOST: trino-coordinator
+      TRINO_PORT: "8080"
+    command: ["python3", "/opt/project/scripts/export_gold_to_minio.py"]
     restart: "no"
 
   superset:

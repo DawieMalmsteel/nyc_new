@@ -14,7 +14,13 @@ done
 
 echo "[postgres-init] Postgres ready, creating trips table ..."
 
-PGPASSWORD=postgres psql -h svc-postgres-cdc -U postgres -d nyc_taxi <<-EOSQL
+python3 <<- 'PYEOF'
+import psycopg2
+
+conn = psycopg2.connect(host='svc-postgres-cdc', user='postgres', password='postgres', dbname='nyc_taxi')
+cur = conn.cursor()
+
+cur.execute("""
     CREATE TABLE IF NOT EXISTS trips (
         trip_id            SERIAL PRIMARY KEY,
         vendor_id          INTEGER,
@@ -36,8 +42,15 @@ PGPASSWORD=postgres psql -h svc-postgres-cdc -U postgres -d nyc_taxi <<-EOSQL
         created_at         TIMESTAMP DEFAULT NOW(),
         updated_at         TIMESTAMP DEFAULT NOW()
     );
+""")
+print("[postgres-init] table 'trips' ready")
 
-    ALTER TABLE trips REPLICA IDENTITY FULL;
-EOSQL
+cur.execute("ALTER TABLE trips REPLICA IDENTITY FULL;")
+print("[postgres-init] REPLICA IDENTITY FULL set")
+
+conn.commit()
+cur.close()
+conn.close()
+PYEOF
 
 echo "[postgres-init] done"

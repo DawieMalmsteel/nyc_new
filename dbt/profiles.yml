@@ -8,4 +8,4 @@ nyc_taxi:
       user: dbt
       database: hive
       schema: mart
-      threads: 4
+      threads: 2

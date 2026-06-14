@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: airflow-init
+  labels:
+    app: airflow-init
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: init
+        image: nyc-airflow:k8s
+        imagePullPolicy: IfNotPresent
+        command: ["bash", "/docker/entrypoint-airflow.sh"]
+        env:
+        - name: AIRFLOW_ROLE
+          value: init
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          value: postgresql+psycopg2://airflow:airflow@svc-airflow-postgres:5432/airflow
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "False"
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: LocalExecutor
+        - name: AIRFLOW__WEBSERVER__SECRET_KEY
+          value: "nyc-taxi-dev-secret-key-change-in-production"
+        - name: AIRFLOW_UID
+          value: "0"
+        - name: AIRFLOW_GID
+          value: "0"
+        volumeMounts:
+        - name: entrypoint
+          mountPath: /docker/entrypoint-airflow.sh
+          subPath: entrypoint-airflow.sh
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: entrypoint
+        configMap:
+          name: airflow-entrypoint
+          defaultMode: 0755

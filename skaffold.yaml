@@ -1,0 +1,145 @@
+apiVersion: skaffold/v4beta3
+kind: Config
+build:
+  local:
+    push: false
+  artifacts:
+    - image: nyc-pipeline-tools
+      context: .
+      docker: { dockerfile: docker/tools.Dockerfile }
+      sync:
+        manual:
+          - src: "airflow/dags/**/*.py"
+            dest: /opt/project/airflow/dags/
+          - src: "jobs/**/*"
+            dest: /opt/project/jobs/
+          - src: "scripts/**/*"
+            dest: /opt/project/scripts/
+          - src: "dbt/**/*"
+            dest: /opt/project/dbt/
+          - src: "charts/**/*"
+            dest: /opt/project/charts/
+    - image: nyc-dbt
+      context: .
+      docker: { dockerfile: docker/dbt.Dockerfile }
+    - image: nyc-airflow
+      context: .
+      docker: { dockerfile: docker/airflow.Dockerfile }
+deploy:
+  helm:
+    releases:
+      - name: nyc-taxi
+        chartPath: charts/nyc-taxi
+        namespace: nyc-taxi
+        valuesFiles: [charts/nyc-taxi/values.yaml]
+        createNamespace: true
+    hooks:
+      before:
+        - host:
+            command:
+              - bash
+              - -c
+              - |
+                set -euo pipefail
+                cd /home/dwcks/vsf_gsm/nyc_new
+                echo "=== Cleaning old release ==="
+                helm uninstall nyc-taxi -n nyc-taxi --ignore-not-found 2>/dev/null || true
+                echo "=== Cleaning namespace ==="
+                kubectl delete ns nyc-taxi --force --grace-period=0 --ignore-not-found 2>/dev/null || true
+                sleep 2
+                # Force-finalize if namespace stuck Terminating
+                ns_json=$(kubectl get ns nyc-taxi -o json 2>/dev/null) || true
+                if [ -n "$ns_json" ]; then
+                  echo "$ns_json" | python3 -c "import json,sys; ns=json.load(sys.stdin); ns['spec']['finalizers']=[]; print(json.dumps(ns))" | kubectl replace --raw /api/v1/namespaces/nyc-taxi/finalize -f - 2>/dev/null || true
+                  sleep 1
+                fi
+                echo "=== Releasing PV claims ==="
+                for pv in $(kubectl get pv -o name 2>/dev/null); do
+                  claim_ns=$(kubectl get "$pv" -o jsonpath='{.spec.claimRef.namespace}' 2>/dev/null) || true
+                  if [ "$claim_ns" = "nyc-taxi" ]; then
+                    kubectl patch "$pv" --type json -p '[{"op":"remove","path":"/spec/claimRef"}]' 2>/dev/null || true
+                  fi
+                done
+                echo "=== Syncing project files to PVC ==="
+                docker exec kind-worker mkdir -p /mnt/nyc-project /mnt/nyc-data
+                tar cf - \
+                  --exclude='dbt/logs' \
+                  --exclude='dbt/target' \
+                  --exclude='dbt/.user.yml' \
+                  --exclude='.git' \
+                  --exclude='__pycache__' \
+                  --exclude='.mypy_cache' \
+                  --exclude='.pytest_cache' \
+                  --exclude='*.pyc' \
+                  --exclude='*.pyo' \
+                  airflow/dags/ jobs/ scripts/ dbt/ charts/ \
+                  | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
+                echo "=== Pre-deploy complete ==="
+      after:
+        - host:
+            command:
+              - bash
+              - -c
+              - |
+                sleep 5
+                echo ""
+                echo "==================== 🚀 PIPELINE UIs ===================="
+                echo "  Superset     http://localhost:39080    admin/admin"
+                echo "  MinIO API    http://localhost:39081    minio/minio123"
+                echo "  Kafka UI     http://localhost:39082"
+                echo "  Spark        http://localhost:39083"
+                echo "  Trino        http://localhost:39084"
+                echo "  Airflow      http://localhost:39085    admin/admin"
+                echo "  MinIO Admin  http://localhost:39086    minio/minio123"
+                echo "  Postgres CDC  localhost:39087          postgres/postgres"
+                echo "========================================================="
+                echo ""
+                # Try to open browsers (suppress errors on headless/WSL)
+                for url in \
+                  http://localhost:39085 \
+                  http://localhost:39080 \
+                  http://localhost:39082; do
+                  (xdg-open "$url" 2>/dev/null || true) &
+                done
+                wait
+portForward:
+  - resourceType: service
+    resourceName: svc-superset
+    namespace: nyc-taxi
+    port: 8088
+    localPort: 39080
+  - resourceType: service
+    resourceName: svc-minio
+    namespace: nyc-taxi
+    port: 9000
+    localPort: 39081
+  - resourceType: service
+    resourceName: svc-minio
+    namespace: nyc-taxi
+    port: 9001
+    localPort: 39086
+  - resourceType: service
+    resourceName: svc-kafka-ui
+    namespace: nyc-taxi
+    port: 8080
+    localPort: 39082
+  - resourceType: service
+    resourceName: svc-spark-master
+    namespace: nyc-taxi
+    port: 8081
+    localPort: 39083
+  - resourceType: service
+    resourceName: svc-trino
+    namespace: nyc-taxi
+    port: 8080
+    localPort: 39084
+  - resourceType: service
+    resourceName: svc-airflow-webserver
+    namespace: nyc-taxi
+    port: 8080
+    localPort: 39085
+  - resourceType: service
+    resourceName: svc-postgres-cdc
+    namespace: nyc-taxi
+    port: 5432
+    localPort: 39087

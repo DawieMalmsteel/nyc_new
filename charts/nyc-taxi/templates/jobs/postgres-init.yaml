@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-init
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: init
+        image: nyc-pipeline-tools:k8s
+        imagePullPolicy: IfNotPresent
+        command:
+        - "entrypoint-init-postgres"
+        volumeMounts:
+        - name: project-files
+          mountPath: /opt/project
+      volumes:
+      - name: project-files
+        persistentVolumeClaim:
+          claimName: project-files-pvc
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 300m
+          memory: 256Mi
+  backoffLimit: 3

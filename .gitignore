@@ -68,8 +68,20 @@ terraform/*.tfplan
 terraform/terraform.tfvars
 terraform/*.auto.tfvars
 
+# ── Skaffold cache ──
+.skaffold/
+
 # ── Spark Ivy cache ──
 .ivy2/
 
+# ── dbt user config (auto-generated) ──
+dbt/.user.yml
+
 # ── Temp files ──
 tmp/
+*.tmp
+*.bak
+
+# ── Process / PID files ──
+*.pid
+*.port-fwd

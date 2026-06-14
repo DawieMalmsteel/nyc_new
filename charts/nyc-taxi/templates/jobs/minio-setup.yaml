@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-setup
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: kind-worker
+      containers:
+      - name: minio-setup
+        image: minio/mc:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -euo pipefail
+          until mc alias set nyc http://svc-minio:9000 minio minio123; do
+            echo "waiting for MinIO..."
+            sleep 2
+          done
+          for bucket in nyc-raw nyc-silver nyc-quarantine nyc-lookup nyc-gold; do
+            if mc ls "nyc/${bucket}" >/dev/null 2>&1; then
+              echo "bucket '${bucket}' exists"
+            else
+              mc mb "nyc/${bucket}"
+            fi
+          done
+          echo "=== Uploading raw parquet ==="
+          mc cp --recursive /data/raw/yellow_taxi/ nyc/nyc-raw/yellow_taxi/
+          echo "=== Uploading lookup ==="
+          mc cp /data/lookup/taxi_zone_lookup.csv nyc/nyc-lookup/
+          echo "=== Done ==="
+          mc ls nyc
+        volumeMounts:
+        - name: raw-data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 300m
+            memory: 256Mi
+      volumes:
+      - name: raw-data
+        persistentVolumeClaim:
+          claimName: raw-data-pvc
+  backoffLimit: 3

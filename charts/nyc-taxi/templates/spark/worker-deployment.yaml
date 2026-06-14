@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: spark-worker
+  name: spark-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spark-worker
+  template:
+    metadata:
+      labels:
+        app: spark-worker
+    spec:
+      containers:
+      - command:
+        - /opt/spark/bin/spark-class
+        - org.apache.spark.deploy.worker.Worker
+        - spark://svc-spark-master:7077
+        - --webui-port
+        - "8082"
+        - --cores
+        - "2"
+        - --memory
+        - 4g
+        image: apache/spark:3.5.1
+        imagePullPolicy: IfNotPresent
+        name: spark-worker
+        ports:
+        - containerPort: 8082
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi

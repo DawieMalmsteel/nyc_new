@@ -22,6 +22,16 @@ nodes:
 - role: worker
   labels:
     node-type: worker
+  extraMounts:
+  - hostPath: /home/dwcks/vsf_gsm/nyc_new
+    containerPath: /mnt/nyc-project
+  - hostPath: /home/dwcks/vsf_gsm/nyc_new/data
+    containerPath: /mnt/nyc-data
 - role: worker
   labels:
     node-type: worker
+  extraMounts:
+  - hostPath: /home/dwcks/vsf_gsm/nyc_new
+    containerPath: /mnt/nyc-project
+  - hostPath: /home/dwcks/vsf_gsm/nyc_new/data
+    containerPath: /mnt/nyc-data

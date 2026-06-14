@@ -1,0 +1,410 @@
+.
+├── AGENTS.md
+├── airflow
+│   ├── config
+│   ├── dags
+│   │   ├── nyc_analytics_refresh.py
+│   │   └── nyc_e2e_pipeline.py
+│   ├── logs
+│   │   ├── celery
+│   │   ├── dag_id=nyc_analytics_refresh
+│   │   │   ├── run_id=manual__2026-06-04T10:03:59+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:10:37+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:13:42+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:16:24+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:18:27+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:23:22+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:25:40+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:27:26+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:33:00+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:35:59+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:40:16+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:45:13+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:49:53+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:51:37+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:53:05+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:57:50+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T10:59:50+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T11:01:55+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T11:05:19+00:00
+│   │   │   │   ├── task_id=dbt_build
+│   │   │   │   │   └── attempt=1.log
+│   │   │   │   └── task_id=superset_bootstrap
+│   │   │   │       └── attempt=1.log
+│   │   │   ├── run_id=manual__2026-06-04T11:09:03+00:00
+│   │   │   │   └── task_id=dbt_build
+│   │   │   │       └── attempt=1.log
+│   │   │   └── run_id=manual__2026-06-04T17:17:08+00:00
+│   │   │       └── task_id=dbt_build
+│   │   │           └── attempt=1.log
+│   │   ├── dag_processor
+│   │   ├── dag_processor_manager
+│   │   │   └── dag_processor_manager.log
+│   │   ├── scheduler
+│   │   │   ├── 2026-06-04
+│   │   │   │   ├── nyc_analytics_refresh.py.log
+│   │   │   │   └── nyc_e2e_pipeline.py.log
+│   │   │   ├── 2026-06-05
+│   │   │   │   ├── nyc_analytics_refresh.py.log
+│   │   │   │   └── nyc_e2e_pipeline.py.log
+│   │   │   ├── 2026-06-08
+│   │   │   │   ├── nyc_analytics_refresh.py.log
+│   │   │   │   └── nyc_e2e_pipeline.py.log
+│   │   │   ├── 2026-06-09
+│   │   │   │   ├── nyc_analytics_refresh.py.log
+│   │   │   │   └── nyc_e2e_pipeline.py.log
+│   │   │   └── latest -> 2026-06-09
+│   │   └── webserver
+│   └── plugins
+├── chalenger.md
+├── check.md
+├── config
+│   └── pipeline.yml
+├── data
+│   ├── checkpoints
+│   ├── lookup
+│   │   └── taxi_zone_lookup.csv
+│   ├── quarantine
+│   │   └── invalid_trips
+│   ├── raw
+│   │   └── yellow_taxi
+│   │       └── year=2024
+│   │           ├── month=01
+│   │           │   ├── data.txt
+│   │           │   └── yellow_tripdata_2024-01.parquet
+│   │           ├── month=02
+│   │           │   └── yellow_tripdata_2024-02.parquet
+│   │           └── month=03
+│   │               └── yellow_tripdata_2024-03.parquet
+│   ├── silver
+│   │   └── trips
+│   └── trino-metastore
+│       ├── mart
+│       │   ├── dim_zone
+│       │   ├── fact_invalid_trips
+│       │   ├── fact_trips
+│       │   ├── gold_dim_zone
+│       │   ├── gold_fact_trips
+│       │   ├── gold_mart_revenue_by_day
+│       │   ├── gold_mart_revenue_by_zone
+│       │   ├── mart_hourly_summary
+│       │   ├── mart_payment_type_summary
+│       │   ├── mart_revenue_by_day
+│       │   ├── mart_revenue_by_zone
+│       │   ├── mart_trips_by_hour
+│       │   ├── stg_invalid_trips
+│       │   ├── stg_trips
+│       │   └── stg_zones
+│       └── nyc
+│           ├── invalid_trips
+│           ├── taxi_zone_lookup
+│           └── trips
+│               ├── pickup_year=2002
+│               │   └── pickup_month=12
+│               ├── pickup_year=2008
+│               │   └── pickup_month=12
+│               ├── pickup_year=2009
+│               │   └── pickup_month=1
+│               ├── pickup_year=2023
+│               │   └── pickup_month=12
+│               └── pickup_year=2024
+│                   ├── pickup_month=1
+│                   ├── pickup_month=2
+│                   ├── pickup_month=3
+│                   └── pickup_month=4
+├── data_analytics.md
+├── dbt
+│   ├── dbt_project.yml
+│   ├── logs
+│   │   └── dbt.log
+│   ├── models
+│   │   ├── gold
+│   │   │   ├── gold_dim_zone.sql
+│   │   │   ├── gold_fact_trips.sql
+│   │   │   ├── gold_mart_revenue_by_day.sql
+│   │   │   └── gold_mart_revenue_by_zone.sql
+│   │   ├── marts
+│   │   │   ├── dim_zone.sql
+│   │   │   ├── fact_invalid_trips.sql
+│   │   │   ├── fact_trips.sql
+│   │   │   ├── mart_hourly_summary.sql
+│   │   │   ├── mart_payment_type_summary.sql
+│   │   │   ├── mart_revenue_by_day.sql
+│   │   │   ├── mart_revenue_by_zone.sql
+│   │   │   └── mart_trips_by_hour.sql
+│   │   └── staging
+│   │       ├── stg_invalid_trips.sql
+│   │       ├── stg_trips.sql
+│   │       └── stg_zones.sql
+│   ├── profiles.yml
+│   ├── target
+│   │   ├── compiled
+│   │   │   └── nyc_taxi
+│   │   │       ├── models
+│   │   │       │   ├── gold
+│   │   │       │   │   ├── gold_dim_zone.sql
+│   │   │       │   │   ├── gold_fact_trips.sql
+│   │   │       │   │   ├── gold_mart_revenue_by_day.sql
+│   │   │       │   │   └── gold_mart_revenue_by_zone.sql
+│   │   │       │   ├── marts
+│   │   │       │   │   ├── dim_zone.sql
+│   │   │       │   │   ├── fact_invalid_trips.sql
+│   │   │       │   │   ├── fact_trips.sql
+│   │   │       │   │   ├── mart_hourly_summary.sql
+│   │   │       │   │   ├── mart_payment_type_summary.sql
+│   │   │       │   │   ├── mart_revenue_by_day.sql
+│   │   │       │   │   ├── mart_revenue_by_zone.sql
+│   │   │       │   │   └── mart_trips_by_hour.sql
+│   │   │       │   └── staging
+│   │   │       │       ├── stg_invalid_trips.sql
+│   │   │       │       ├── stg_trips.sql
+│   │   │       │       └── stg_zones.sql
+│   │   │       └── tests
+│   │   │           ├── fact_invalid_trips_tests.yml
+│   │   │           │   └── not_null_fact_invalid_trips_validation_error.sql
+│   │   │           ├── fact_trips_tests.yml
+│   │   │           │   ├── not_null_fact_trips_pickup_ts.sql
+│   │   │           │   └── not_null_fact_trips_total_amount.sql
+│   │   │           ├── payment_type_range.sql
+│   │   │           └── stg_trips_tests.yml
+│   │   │               ├── accepted_values_stg_trips_payment_type__1__2__3__4__5__6.sql
+│   │   │               ├── not_null_stg_trips_dropoff_ts.sql
+│   │   │               ├── not_null_stg_trips_payment_type.sql
+│   │   │               ├── not_null_stg_trips_pickup_ts.sql
+│   │   │               ├── not_null_stg_trips_total_amount.sql
+│   │   │               └── not_null_stg_trips_trip_distance.sql
+│   │   ├── graph.gpickle
+│   │   ├── graph_summary.json
+│   │   ├── manifest.json
+│   │   ├── partial_parse.msgpack
+│   │   ├── run
+│   │   │   └── nyc_taxi
+│   │   │       ├── models
+│   │   │       │   ├── gold
+│   │   │       │   │   ├── gold_dim_zone.sql
+│   │   │       │   │   ├── gold_fact_trips.sql
+│   │   │       │   │   ├── gold_mart_revenue_by_day.sql
+│   │   │       │   │   └── gold_mart_revenue_by_zone.sql
+│   │   │       │   ├── marts
+│   │   │       │   │   ├── dim_zone.sql
+│   │   │       │   │   ├── fact_invalid_trips.sql
+│   │   │       │   │   ├── fact_trips.sql
+│   │   │       │   │   ├── mart_hourly_summary.sql
+│   │   │       │   │   ├── mart_payment_type_summary.sql
+│   │   │       │   │   ├── mart_revenue_by_day.sql
+│   │   │       │   │   ├── mart_revenue_by_zone.sql
+│   │   │       │   │   └── mart_trips_by_hour.sql
+│   │   │       │   └── staging
+│   │   │       │       ├── stg_invalid_trips.sql
+│   │   │       │       ├── stg_trips.sql
+│   │   │       │       └── stg_zones.sql
+│   │   │       └── tests
+│   │   │           ├── fact_invalid_trips_tests.yml
+│   │   │           │   └── not_null_fact_invalid_trips_validation_error.sql
+│   │   │           ├── fact_trips_tests.yml
+│   │   │           │   ├── not_null_fact_trips_pickup_ts.sql
+│   │   │           │   └── not_null_fact_trips_total_amount.sql
+│   │   │           ├── payment_type_range.sql
+│   │   │           └── stg_trips_tests.yml
+│   │   │               ├── accepted_values_stg_trips_payment_type__1__2__3__4__5__6.sql
+│   │   │               ├── not_null_stg_trips_dropoff_ts.sql
+│   │   │               ├── not_null_stg_trips_payment_type.sql
+│   │   │               ├── not_null_stg_trips_pickup_ts.sql
+│   │   │               ├── not_null_stg_trips_total_amount.sql
+│   │   │               └── not_null_stg_trips_trip_distance.sql
+│   │   ├── run_results.json
+│   │   └── semantic_manifest.json
+│   └── tests
+│       ├── fact_invalid_trips_tests.yml
+│       ├── fact_trips_tests.yml
+│       ├── payment_type_range.sql
+│       └── stg_trips_tests.yml
+├── docker
+│   ├── airflow.Dockerfile
+│   ├── dbt.Dockerfile
+│   ├── entrypoint-airflow.sh
+│   ├── entrypoint-cdc-bridge.sh
+│   ├── entrypoint-cdc-register.sh
+│   ├── entrypoint-cdc-seed.sh
+│   ├── entrypoint-dbt.sh
+│   ├── entrypoint-init-postgres.sh
+│   ├── entrypoint-quality.sh
+│   ├── entrypoint-topic-init.sh
+│   ├── entrypoint-trino-bootstrap.sh
+│   ├── superset
+│   │   ├── __pycache__
+│   │   │   └── superset_config.cpython-310.pyc
+│   │   ├── bootstrap_superset.sh
+│   │   ├── entrypoint-superset.sh
+│   │   └── superset_config.py
+│   ├── tools.Dockerfile
+│   ├── trino
+│   │   └── etc
+│   │       ├── catalog
+│   │       │   └── hive.properties
+│   │       ├── config.properties
+│   │       ├── jvm.config
+│   │       ├── log.properties
+│   │       ├── node.properties
+│   │       └── password.db
+│   └── wait-kafka.sh
+├── docker-compose.yml
+├── GUIDE.md
+├── jobs
+│   ├── kafka_stream_processor.py
+│   ├── spark_batch_backfill.py
+│   ├── spark_local_batch.py
+│   ├── spark_quality_report.py
+│   └── spark_stream_taxi_events.py
+├── k8s
+│   ├── airflow
+│   │   ├── entrypoint-configmap.yaml
+│   │   ├── init-job.yaml
+│   │   ├── postgres
+│   │   │   ├── pvc.yaml
+│   │   │   ├── service.yaml
+│   │   │   └── statefulset.yaml
+│   │   ├── rbac.yaml
+│   │   ├── scheduler
+│   │   │   └── deployment.yaml
+│   │   └── webserver
+│   │       ├── deployment.yaml
+│   │       └── service.yaml
+│   ├── dbt
+│   │   └── job.yaml
+│   ├── debezium
+│   │   ├── deployment.yaml
+│   │   └── service.yaml
+│   ├── jobs
+│   │   ├── cdc-bridge.yaml
+│   │   ├── cdc-register.yaml
+│   │   ├── cdc-seed.yaml
+│   │   ├── minio-setup.yaml
+│   │   ├── postgres-init.yaml
+│   │   ├── spark-batch-m01.yaml
+│   │   ├── spark-batch-m02.yaml
+│   │   ├── spark-batch-m03.yaml
+│   │   ├── spark-batch.yaml
+│   │   ├── spark-streaming.yaml
+│   │   ├── topic-init.yaml
+│   │   ├── trino-bootstrap.yaml
+│   │   ├── verify-analytics.yaml
+│   │   └── verify-mart.yaml
+│   ├── kafka
+│   │   ├── service.yaml
+│   │   └── statefulset.yaml
+│   ├── kafka-ui
+│   │   ├── deployment.yaml
+│   │   └── service.yaml
+│   ├── minio
+│   │   ├── deployment.yaml
+│   │   ├── pvc.yaml
+│   │   └── service.yaml
+│   ├── namespace
+│   │   └── nyc-taxi.yaml
+│   ├── postgres-cdc
+│   │   ├── pvc.yaml
+│   │   ├── service.yaml
+│   │   └── statefulset.yaml
+│   ├── spark
+│   │   ├── master-deployment.yaml
+│   │   ├── master-service.yaml
+│   │   ├── worker-deployment.yaml
+│   │   └── worker-service.yaml
+│   ├── storage
+│   │   ├── project-files-pv.yaml
+│   │   └── raw-data-pv.yaml
+│   ├── superset
+│   │   ├── configmap.yaml
+│   │   ├── deployment.yaml
+│   │   └── service.yaml
+│   ├── trino
+│   │   ├── configmap.yaml
+│   │   ├── deployment.yaml
+│   │   └── service.yaml
+│   └── zookeeper
+│       ├── service.yaml
+│       └── statefulset.yaml
+├── kind.yaml
+├── Makefile
+├── PLAN.md
+├── README.md
+├── README_vi.md
+├── reports
+│   ├── data_quality_report.md
+│   ├── local_test_report.md
+│   ├── report.md
+│   ├── report.txt
+│   └── report_en.txt
+├── scripts
+│   ├── cdc_bridge.py
+│   ├── cdc_register_connector.py
+│   ├── cdc_seed.py
+│   ├── create_kafka_topics.py
+│   ├── create_kafka_topics.sh
+│   ├── create_per_run_topic.py
+│   ├── download_data.sh
+│   ├── k8s_ui.sh
+│   ├── local_e2e_full_9_5m.sh
+│   ├── local_e2e_test.sh
+│   ├── run_analytics_questions.py
+│   ├── run_dbt.sh
+│   ├── run_generator.sh
+│   ├── run_generator_full.sh
+│   ├── start_streaming_job.sh
+│   ├── start_streaming_job_docker.sh
+│   ├── superset_bootstrap.py
+│   ├── superset_check.py
+│   ├── superset_dashboard_update.py
+│   ├── trino_register.py
+│   ├── trino_sync_partitions.py
+│   ├── update_dashboard.py
+│   └── verify_mart.py
+├── sql
+│   ├── analytics_questions.sql
+│   └── smoke_tests.sql
+├── structure.txt
+├── terraform
+│   ├── k8s.tf
+│   ├── main.tf
+│   ├── providers.tf
+│   ├── terraform.tfstate
+│   └── variables.tf
+├── tmp
+└── workflow.md
