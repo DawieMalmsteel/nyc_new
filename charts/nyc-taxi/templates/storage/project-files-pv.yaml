@@ -30,3 +30,4 @@ spec:
     requests:
       storage: 5Gi
   storageClassName: ""
+  volumeName: project-files-pv

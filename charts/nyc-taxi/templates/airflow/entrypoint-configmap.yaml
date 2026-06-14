@@ -29,8 +29,9 @@ data:
         sleep 2
       done
       # Phase 2: wait for psycopg2 connect (max 60s)
+      local dsn="${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN/+psycopg2/}"
       for i in $(seq 1 30); do
-        python -c "from psycopg2 import connect; connect('${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}')" 2>/dev/null \
+        python -c "from psycopg2 import connect; connect('${dsn}')" 2>/dev/null \
           && echo "  PostgreSQL reachable after ${i}s" && return 0
         echo "  Connecting... (${i}s)"
         sleep 2

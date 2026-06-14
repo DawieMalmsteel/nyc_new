@@ -1,11 +1,12 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: airflow-scheduler
   labels:
     app: airflow-scheduler
 spec:
   replicas: 1
+  serviceName: svc-airflow-scheduler
   selector:
     matchLabels:
       app: airflow-scheduler
@@ -15,6 +16,9 @@ spec:
         app: airflow-scheduler
     spec:
       serviceAccountName: airflow-sa
+      dnsConfig:
+        searches:
+          - svc-airflow-scheduler.nyc-taxi.svc.cluster.local
       containers:
       - name: scheduler
         image: nyc-airflow:k8s
@@ -29,6 +33,8 @@ spec:
           value: "False"
         - name: AIRFLOW__CORE__EXECUTOR
           value: LocalExecutor
+        - name: AIRFLOW__LOGGING__BASE_LOG_FOLDER
+          value: "/opt/airflow/logs"
         - name: AIRFLOW__WEBSERVER__SECRET_KEY
           value: "nyc-taxi-dev-secret-key-change-in-production"
         - name: AIRFLOW_UID
@@ -44,6 +50,9 @@ spec:
         - name: project-files
           mountPath: /opt/airflow/dags
           subPath: airflow/dags
+        - name: project-files
+          mountPath: /opt/airflow/logs
+          subPath: airflow/logs
         resources:
           requests:
             cpu: 300m

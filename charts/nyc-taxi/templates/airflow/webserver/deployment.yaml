@@ -15,6 +15,9 @@ spec:
         app: airflow-webserver
     spec:
       serviceAccountName: airflow-sa
+      dnsConfig:
+        searches:
+          - svc-airflow-scheduler.nyc-taxi.svc.cluster.local
       containers:
       - name: webserver
         image: nyc-airflow:k8s
@@ -32,8 +35,12 @@ spec:
           value: "False"
         - name: AIRFLOW__CORE__EXECUTOR
           value: LocalExecutor
+        - name: AIRFLOW__LOGGING__BASE_LOG_FOLDER
+          value: "/opt/airflow/logs"
         - name: AIRFLOW__WEBSERVER__SECRET_KEY
           value: "nyc-taxi-dev-secret-key-change-in-production"
+        - name: AIRFLOW__WEBSERVER__WORKER_LOG_FETCH_FROM_K8S
+          value: "True"
         - name: AIRFLOW_UID
           value: "0"
         volumeMounts:
@@ -45,6 +52,9 @@ spec:
         - name: project-files
           mountPath: /opt/airflow/dags
           subPath: airflow/dags
+        - name: project-files
+          mountPath: /opt/airflow/logs
+          subPath: airflow/logs
         resources:
           requests:
             cpu: 300m

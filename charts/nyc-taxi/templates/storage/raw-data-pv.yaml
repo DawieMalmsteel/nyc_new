@@ -4,7 +4,7 @@ metadata:
   name: raw-data-pv
 spec:
   capacity:
-    storage: 50Gi
+    storage: 5Gi
   accessModes:
   - ReadWriteOnce
   hostPath:
@@ -28,5 +28,6 @@ spec:
   - ReadWriteOnce
   resources:
     requests:
-      storage: 50Gi
+      storage: 5Gi
   storageClassName: ""
+  volumeName: raw-data-pv

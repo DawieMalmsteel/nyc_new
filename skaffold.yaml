@@ -42,11 +42,26 @@ deploy:
               - |
                 set -euo pipefail
                 cd /home/dwcks/vsf_gsm/nyc_new
-                echo "=== Deleting existing jobs (immutable) ==="
-                kubectl delete job -n nyc-taxi --all --ignore-not-found 2>/dev/null || true
-                echo "=== Syncing project files to kind-worker PVC ==="
-                docker exec kind-worker mkdir -p /mnt/nyc-project
-                # Exclude generated dirs that can change during tar or shouldn't be synced
+                echo "=== Cleaning old release ==="
+                helm uninstall nyc-taxi -n nyc-taxi --ignore-not-found 2>/dev/null || true
+                echo "=== Cleaning namespace ==="
+                kubectl delete ns nyc-taxi --force --grace-period=0 --ignore-not-found 2>/dev/null || true
+                sleep 2
+                # Force-finalize if namespace stuck Terminating
+                ns_json=$(kubectl get ns nyc-taxi -o json 2>/dev/null) || true
+                if [ -n "$ns_json" ]; then
+                  echo "$ns_json" | python3 -c "import json,sys; ns=json.load(sys.stdin); ns['spec']['finalizers']=[]; print(json.dumps(ns))" | kubectl replace --raw /api/v1/namespaces/nyc-taxi/finalize -f - 2>/dev/null || true
+                  sleep 1
+                fi
+                echo "=== Releasing PV claims ==="
+                for pv in $(kubectl get pv -o name 2>/dev/null); do
+                  claim_ns=$(kubectl get "$pv" -o jsonpath='{.spec.claimRef.namespace}' 2>/dev/null) || true
+                  if [ "$claim_ns" = "nyc-taxi" ]; then
+                    kubectl patch "$pv" --type json -p '[{"op":"remove","path":"/spec/claimRef"}]' 2>/dev/null || true
+                  fi
+                done
+                echo "=== Syncing project files to PVC ==="
+                docker exec kind-worker mkdir -p /mnt/nyc-project /mnt/nyc-data
                 tar cf - \
                   --exclude='dbt/logs' \
                   --exclude='dbt/target' \
@@ -59,7 +74,7 @@ deploy:
                   --exclude='*.pyo' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
-                echo "=== Sync complete ==="
+                echo "=== Pre-deploy complete ==="
       after:
         - host:
             command:
