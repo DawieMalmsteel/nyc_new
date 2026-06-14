@@ -26,10 +26,10 @@ spec:
         resources:
           requests:
             cpu: 500m
-            memory: 2Gi
+            memory: 3Gi
           limits:
             cpu: "2"
-            memory: 4Gi
+            memory: 6Gi
         volumeMounts:
         - mountPath: /etc/trino/config.properties
           name: trino-main-config
