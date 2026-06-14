@@ -8,7 +8,7 @@ from trino.dbapi import connect
 from trino.exceptions import TrinoUserError
 
 
-def wait_for_trino(host: str, port: int, timeout: int = 120) -> None:
+def wait_for_trino(host: str, port: int, timeout: int = 300) -> None:
     deadline = time.time() + timeout
     last_err: Exception | None = None
     while time.time() < deadline:
