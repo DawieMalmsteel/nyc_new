@@ -52,7 +52,6 @@ GOLD_DATASETS = [
                 pickup_zone, dropoff_zone,
                 pickup_borough, dropoff_borough,
                 pickup_service_zone, dropoff_service_zone,
-                pickup_year, pickup_month,
                 -- Enrichment columns
                 CASE
                     WHEN pickup_zone IN ('JFK Airport','LaGuardia Airport','Newark Airport')
@@ -76,7 +75,9 @@ GOLD_DATASETS = [
                       OR pickup_hour_ts < TIMESTAMP '2024-01-01 05:00'
                     THEN 'late_night'
                     ELSE 'regular'
-                END AS trip_time_category
+                END AS trip_time_category,
+                -- Partition columns MUST be last
+                pickup_year, pickup_month
             FROM hive.mart.gold_fact_trips
         """,
     },
@@ -934,15 +935,17 @@ def clean_s3_path(bucket: str, prefix: str) -> None:
         )
         objects = list(client.list_objects(bucket, prefix=prefix, recursive=True))
         if objects:
-            obj_names = [obj.object_name for obj in objects]
-            errors = client.remove_objects(bucket, obj_names)
-            for err in errors:
-                print(f"[cleanup] S3 delete error: {err}", file=sys.stderr)
-            print(f"[cleanup] removed {len(obj_names)} objects from s3://{bucket}/{prefix}")
+            removed = 0
+            for obj in objects:
+                try:
+                    client.remove_object(bucket, obj.object_name)
+                    removed += 1
+                except Exception:
+                    pass
+            print(f"[cleanup] removed {removed} objects from s3://{bucket}/{prefix}")
     except S3Error as e:
         print(f"[cleanup] S3 error: {e}", file=sys.stderr)
     except Exception as e:
-        # MinIO might not be reachable — warn but continue
         print(f"[cleanup] warning: cannot clean S3 path: {e}", file=sys.stderr)
 
 
