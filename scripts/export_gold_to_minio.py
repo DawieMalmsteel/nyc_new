@@ -35,26 +35,7 @@ GOLD_PATH = "s3://nyc-gold"
 
 GOLD_DATASETS = [
     # ── 1. Fact Tables ──
-    {
-        "name": "fact_trips",
-        "partitioned": True,
-        "sql": """
-            SELECT
-                trip_id, source_file, vendor_id,
-                pickup_ts, dropoff_ts, passenger_count,
-                trip_distance, rate_code_id, payment_type,
-                fare_amount, extra, mta_tax, tip_amount,
-                tolls_amount, improvement_surcharge, total_amount,
-                tip_amount / NULLIF(total_amount, 0) AS tip_rate,
-                date_diff('second', pickup_ts, dropoff_ts) AS trip_duration_sec,
-                pickup_location_id, dropoff_location_id,
-                pickup_zone, dropoff_zone,
-                pickup_borough, dropoff_borough,
-                pickup_service_zone, dropoff_service_zone,
-                pickup_year, pickup_month
-            FROM hive.mart.gold_fact_trips
-        """,
-    },
+    # NOTE: fact_trips_enriched first so dbt gold_fact_trips view settles
     {
         "name": "fact_trips_enriched",
         "partitioned": True,
@@ -71,35 +52,50 @@ GOLD_DATASETS = [
                 pickup_zone, dropoff_zone,
                 pickup_borough, dropoff_borough,
                 pickup_service_zone, dropoff_service_zone,
-                -- enriched columns
-                CASE WHEN pickup_location_id IN (1, 129, 132, 138)
-                          OR dropoff_location_id IN (1, 129, 132, 138)
-                     THEN TRUE ELSE FALSE
+                pickup_year, pickup_month,
+                -- Enrichment columns
+                CASE
+                    WHEN pickup_zone IN ('JFK Airport','LaGuardia Airport','Newark Airport')
+                      OR dropoff_zone IN ('JFK Airport','LaGuardia Airport','Newark Airport')
+                    THEN TRUE ELSE FALSE
                 END AS is_airport_trip,
                 CASE
-                    WHEN EXTRACT(HOUR FROM pickup_ts) BETWEEN 6 AND 9 THEN 'morning_peak'
-                    WHEN EXTRACT(HOUR FROM pickup_ts) BETWEEN 16 AND 19 THEN 'evening_peak'
-                    WHEN EXTRACT(HOUR FROM pickup_ts) BETWEEN 10 AND 15 THEN 'midday'
-                    WHEN EXTRACT(HOUR FROM pickup_ts) BETWEEN 0 AND 5 THEN 'early_morning'
-                    ELSE 'night'
-                END AS trip_time_category,
+                    WHEN trip_distance < 1 THEN 'very_short'
+                    WHEN trip_distance < 3 THEN 'short'
+                    WHEN trip_distance < 10 THEN 'medium'
+                    ELSE 'long'
+                END AS trip_distance_category,
                 CASE
-                    WHEN pickup_location_id IN (1, 129, 132, 138)
-                     AND dropoff_location_id NOT IN (1, 129, 132, 138)
-                    THEN 'airport_departure'
-                    WHEN dropoff_location_id IN (1, 129, 132, 138)
-                     AND pickup_location_id NOT IN (1, 129, 132, 138)
-                    THEN 'airport_arrival'
-                    WHEN EXTRACT(HOUR FROM pickup_ts) BETWEEN 6 AND 10
-                     AND pickup_borough != dropoff_borough
-                    THEN 'commute_to_work'
-                    WHEN EXTRACT(HOUR FROM dropoff_ts) BETWEEN 16 AND 20
-                     AND pickup_borough != dropoff_borough
-                    THEN 'commute_home'
-                    ELSE 'other'
-                END AS inferred_purpose,
-                'Unknown' AS zone_volume_tier,
-                -- partition columns must be LAST
+                    WHEN pickup_hour_ts >= TIMESTAMP '2024-01-01 06:00'
+                     AND pickup_hour_ts < TIMESTAMP '2024-01-01 10:00'
+                    THEN 'morning_rush'
+                    WHEN pickup_hour_ts >= TIMESTAMP '2024-01-01 16:00'
+                     AND pickup_hour_ts < TIMESTAMP '2024-01-01 20:00'
+                    THEN 'evening_rush'
+                    WHEN pickup_hour_ts >= TIMESTAMP '2024-01-01 22:00'
+                      OR pickup_hour_ts < TIMESTAMP '2024-01-01 05:00'
+                    THEN 'late_night'
+                    ELSE 'regular'
+                END AS trip_time_category
+            FROM hive.mart.gold_fact_trips
+        """,
+    },
+    {
+        "name": "fact_trips",
+        "partitioned": True,
+        "sql": """
+            SELECT
+                trip_id, source_file, vendor_id,
+                pickup_ts, dropoff_ts, passenger_count,
+                trip_distance, rate_code_id, payment_type,
+                fare_amount, extra, mta_tax, tip_amount,
+                tolls_amount, improvement_surcharge, total_amount,
+                tip_amount / NULLIF(total_amount, 0) AS tip_rate,
+                date_diff('second', pickup_ts, dropoff_ts) AS trip_duration_sec,
+                pickup_location_id, dropoff_location_id,
+                pickup_zone, dropoff_zone,
+                pickup_borough, dropoff_borough,
+                pickup_service_zone, dropoff_service_zone,
                 pickup_year, pickup_month
             FROM hive.mart.gold_fact_trips
         """,
@@ -950,6 +946,39 @@ def clean_s3_path(bucket: str, prefix: str) -> None:
         print(f"[cleanup] warning: cannot clean S3 path: {e}", file=sys.stderr)
 
 
+
+def _add_parquet_extensions(name: str) -> None:
+    """Rename all data files under prefix to have .parquet extension.
+
+    Trino Hive CTAS writes valid Parquet but without the .parquet
+    suffix. This makes files discoverable by tools that rely on
+    file extensions (DuckDB, pandas, etc.). Handles both flat and
+    partitioned datasets.
+    """
+    try:
+        from minio import Minio       # type: ignore[import-untyped]
+    except ImportError:
+        return  # minio not available in this context
+    try:
+        mc = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
+                    secret_key=MINIO_SECRET_KEY, secure=False)
+        objs = list(mc.list_objects(MINIO_BUCKET, prefix=f"{name}/",
+                                     recursive=True))
+        renamed = 0
+        for obj in objs:
+            src = obj.object_name
+            if src.endswith('.parquet') or src.endswith('/'):
+                continue
+            dst = src + '.parquet'
+            mc.copy_object(MINIO_BUCKET, dst, f"{MINIO_BUCKET}/{src}")
+            mc.remove_object(MINIO_BUCKET, src)
+            renamed += 1
+        if renamed:
+            print(f"[export] {name}: renamed {renamed} files -> .parquet")
+    except Exception:
+        pass  # best-effort; Trino reads files fine without extension
+
+
 def main() -> int:
     wait_for_trino(TRINO_HOST, TRINO_PORT)
     conn = connect(host=TRINO_HOST, port=TRINO_PORT, user="gold_export")
@@ -1006,32 +1035,13 @@ def main() -> int:
             total_rows += row_count
             print(f"[export] {name}: ✅ {row_count} rows, {elapsed:.1f}s")
 
-            # Rename Parquet files to have .parquet extension
-            try:
-                from minio import Minio
-                from minio.error import S3Error
-                mc = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
-                           secret_key=MINIO_SECRET_KEY, secure=False)
-                objs = list(mc.list_objects(MINIO_BUCKET, prefix=f"{name}/", recursive=True))
-                renamed = 0
-                for obj in objs:
-                    if obj.object_name.endswith('.parquet'):
-                        continue
-                    # Check if it"s a Trino-generated data file (not partition dir)
-                    src = obj.object_name
-                    if '/' not in src[len(name)+1:]:  # top-level file
-                        dst = src + '.parquet'
-                        mc.copy_object(MINIO_BUCKET, dst, f"{MINIO_BUCKET}/{src}")
-                        mc.remove_object(MINIO_BUCKET, src)
-                        renamed += 1
-                if renamed:
-                    print(f"[export] {name}: renamed {renamed} files → .parquet")
-            except Exception:
-                pass  # rename is best-effort
+            # Add .parquet extension to Trino-written files (best-effort)
+            _add_parquet_extensions(name)
 
         except TrinoUserError as e:
             print(f"[export] {name}: ❌ FAILED — {e}")
             total_fail += 1
+
 
     conn.close()
 

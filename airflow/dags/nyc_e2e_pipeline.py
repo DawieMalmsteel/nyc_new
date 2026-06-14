@@ -192,7 +192,7 @@ with DAG(
         arguments=["/opt/project/scripts/superset_bootstrap.py"],
         env_vars=[
             k8s.V1EnvVar(name="SUPERSET_URL", value="http://svc-superset:8088"),
-            k8s.V1EnvVar(name="TRINO_URI", value="trino://analytics@svc-trino:8080/hive/mart"),
+            k8s.V1EnvVar(name="TRINO_URI", value="trino://analytics@svc-trino:8080/hive"),
         ],
         volumes=[project_volume],
         volume_mounts=[project_volume_mount],
