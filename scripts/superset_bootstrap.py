@@ -252,16 +252,31 @@ def main() -> int:
         else:
             params["order_desc"] = False
 
+        # Create chart without attaching to dashboard — we'll rebuild
+        # position_json separately to avoid stale form_data cache.
         resp = post("/chart/", {
             "slice_name": name,
             "viz_type": viz,
             "datasource_id": ds_id,
             "datasource_type": "table",
             "params": json.dumps(params),
-            "dashboards": [dash_id],
         })
         chart_ids[name] = resp["id"]
         print(f"[chart] {name} ({viz}) id={resp['id']}")
+
+    # ── 6. Sync dashboard layout: build clean position_json ──
+    # Using only chartId in meta forces Superset to fetch real params
+    # from the chart API instead of using stale form_data cache.
+    position = {"DASHBOARD_VERSION_KEY": "v2",
+                "ROOT": {"type": "ROOT", "children": ["GRID_ID"]},
+                "GRID_ID": {"type": "GRID", "children": []}}
+    for i, (name, cid) in enumerate(chart_ids.items()):
+        slot_id = f"CHART-{i}"
+        position["GRID_ID"]["children"].append(slot_id)
+        position[slot_id] = {"type": "CHART",
+                              "meta": {"chartId": cid, "width": 4, "height": 50}}
+    put(f"/dashboard/{dash_id}", {"position_json": json.dumps(position)})
+    print(f"[dashboard] layout rebuilt: {len(chart_ids)} charts")
 
     print(
         f"\n{'='*60}\n"
