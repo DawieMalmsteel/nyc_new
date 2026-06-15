@@ -236,7 +236,13 @@ def main() -> int:
 
         existing = existing_by_name.get(name)
 
-        # Build full params with orderby for table charts
+        # Delete+recreate to avoid stale params (orderby, etc.)
+        if existing and existing.get("datasource_id") == ds_id:
+            cid = existing["id"]
+            _api("DELETE", f"/chart/{cid}")
+            print(f"[chart] deleted old {name} id={cid} (recreating)")
+
+        # Build params
         if viz == "table" or viz.startswith("echarts"):
             orderby_col = (params.get("groupby", [None])[0]
                            if params.get("groupby") else
@@ -244,22 +250,6 @@ def main() -> int:
             if orderby_col:
                 params["orderby"] = [[orderby_col, False]]
                 params["order_desc"] = False
-
-        if existing and existing.get("datasource_id") == ds_id:
-            cid = existing["id"]
-            chart_ids[name] = cid
-            dashboards = existing.get("dashboards", [])
-            db_list = [d["id"] if isinstance(d, dict) else d for d in dashboards]
-            if dash_id not in db_list:
-                db_list.append(dash_id)
-            put(f"/chart/{cid}", {
-                "datasource_id": ds_id,
-                "datasource_type": "table",
-                "params": json.dumps(params),
-                "dashboards": db_list,
-            })
-            print(f"[chart] updated {name} id={cid}")
-            continue
 
         resp = post("/chart/", {
             "slice_name": name,
