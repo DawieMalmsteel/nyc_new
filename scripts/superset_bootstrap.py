@@ -5,6 +5,9 @@ superset_bootstrap.py — Register Trino DB, gold datasets, charts, and dashboar
 Idempotent: skips resources that already exist. Uses REST API.
 Registers all 34 gold tables from hive.nyc_gold as Superset datasets,
 plus key mart tables for backward compatibility.
+
+Superset 4.0 note: charts are linked to dashboards via the "dashboards" field
+on chart create/update, NOT via POST /dashboard/{id}/charts (removed in 4.0).
 """
 import json
 import os
@@ -20,7 +23,7 @@ TRINO_URI = os.environ.get(
 # ── Gold tables grouped by category ──
 GOLD_TABLES = [
     # Fact tables (aggregates only — raw 5.4M-row tables via Trino)
-    ("nyc_gold", "fact_trips_daily"),
+    # note: fact_trips_daily not yet created by gold_export
     ("nyc_gold", "fact_trips_hourly"),
     ("nyc_gold", "fact_trips_hourly_zone"),
     ("nyc_gold", "fact_trips_borough"),
@@ -59,21 +62,97 @@ GOLD_TABLES = [
     ("nyc_gold", "dq_batch_metadata"),
 ]
 
+# ── Chart definitions: (name, viz_type, datasource_key, params) ──
+# Timeseries charts need granularity_sqla (datetime column).
+# Pie/bar charts need groupby + metrics.
+# Table charts need nothing special.
+CHART_DEFS = [
+    # ── FACT tables ──
+    ("Hourly Trip Pattern", "echarts_timeseries_bar", "nyc_gold.fact_trips_hourly",
+     {"metrics": ["trip_count"], "groupby": ["pickup_hour"],
+      "granularity_sqla": "pickup_date", "time_range": "No filter"}),
+    ("Hourly Zone Detail", "table", "nyc_gold.fact_trips_hourly_zone",
+     {}),
+    ("Borough Trip Summary", "table", "nyc_gold.fact_trips_borough",
+     {}),
 
-def _req(method: str, path: str, data: dict | None = None) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if data is not None:
-        data_bytes = json.dumps(data).encode()
-    else:
-        data_bytes = None
-    r = urllib.request.Request(
-        f"{BASE}{path}", data=data_bytes, headers=headers, method=method
-    )
-    with urllib.request.urlopen(r) as resp:
-        return json.loads(resp.read())
+    # ── DIM tables ──
+    ("Zone Directory", "table", "nyc_gold.dim_zone",
+     {}),
+    ("Zone Groups", "table", "nyc_gold.dim_zone_grouped",
+     {}),
+
+    # ── KPI tables ──
+    ("Daily Revenue (KPI)", "echarts_timeseries_bar", "nyc_gold.kpi_daily_overview",
+     {"metrics": ["revenue"], "granularity_sqla": "pickup_date",
+      "time_range": "No filter"}),
+    ("Daily Trips (KPI)", "echarts_timeseries_line", "nyc_gold.kpi_daily_overview",
+     {"metrics": ["trips"], "granularity_sqla": "pickup_date",
+      "time_range": "No filter"}),
+    ("Daily Utilization", "echarts_timeseries_line", "nyc_gold.kpi_daily_overview",
+     {"metrics": ["utilization_rate"], "granularity_sqla": "pickup_date",
+      "time_range": "No filter"}),
+    ("Weekly Trip Trends", "echarts_timeseries_bar", "nyc_gold.kpi_weekly_trends",
+     {"metrics": ["trip_count"], "granularity_sqla": "week_start",
+      "time_range": "No filter"}),
+    ("Weekly Growth Rate", "echarts_timeseries_line", "nyc_gold.kpi_weekly_trends",
+     {"metrics": ["trip_growth_pct", "revenue_growth_pct"],
+      "granularity_sqla": "week_start", "time_range": "No filter"}),
+    ("Monthly Revenue Growth", "table", "nyc_gold.kpi_monthly_summary",
+     {}),
+    ("Borough Market Share", "pie", "nyc_gold.kpi_borough_comparison",
+     {"metrics": ["revenue"], "groupby": ["pickup_borough"]}),
+    ("Zone Performance", "table", "nyc_gold.kpi_zone_performance",
+     {}),
+    ("Zone Net Flow", "table", "nyc_gold.kpi_zone_net_flow",
+     {}),
+    ("Payment Types", "pie", "nyc_gold.kpi_payment_trends",
+     {"metrics": ["trip_count"], "groupby": ["payment_type"]}),
+    ("Vendor Market Share", "pie", "nyc_gold.kpi_vendor_performance",
+     {"metrics": ["trips"], "groupby": ["vendor_name"]}),
+
+    # ── ROUTE tables ──
+    ("Top Pickup Zones", "table", "nyc_gold.route_top_pickup_zones",
+     {}),
+    ("Top Dropoff Zones", "table", "nyc_gold.route_top_dropoff_zones",
+     {}),
+    ("Popular Routes", "table", "nyc_gold.route_popular_routes",
+     {}),
+    ("Airport Trip Analysis", "table", "nyc_gold.route_airport_analysis",
+     {}),
+    ("Airport Zone Matrix", "table", "nyc_gold.route_airport_zone_matrix",
+     {}),
+    ("Cross-Borough Routes", "table", "nyc_gold.route_cross_borough",
+     {}),
+    ("Borough OD Matrix", "table", "nyc_gold.od_borough_matrix",
+     {}),
+
+    # ── OPS tables ──
+    ("Peak Hours Heatmap", "table", "nyc_gold.ops_peak_hours_heatmap",
+     {}),
+    ("Trip Distance Distribution", "table", "nyc_gold.ops_trip_distance_distribution",
+     {}),
+    ("Passenger Count Pattern", "table", "nyc_gold.ops_passenger_count_pattern",
+     {}),
+    ("Utilization Rate", "echarts_timeseries_line", "nyc_gold.ops_utilization_rate",
+     {"metrics": ["tip_rate_pct", "multi_passenger_pct"],
+      "granularity_sqla": "pickup_date", "time_range": "No filter"}),
+
+    # ── DQ tables ──
+    ("Data Quality Summary", "table", "nyc_gold.dq_validation_summary",
+     {}),
+    ("Invalid by Reason", "pie", "nyc_gold.dq_invalid_by_reason",
+     {"metrics": ["count"], "groupby": ["reason"]}),
+    ("Row Count Trend", "echarts_timeseries_line", "nyc_gold.dq_row_count_trend",
+     {"metrics": ["trip_count"], "granularity_sqla": "pickup_date",
+      "time_range": "No filter"}),
+    ("Batch Metadata", "table", "nyc_gold.dq_batch_metadata",
+     {}),
+]
 
 
 def main() -> int:
+    # ── Login ──
     token = _req(
         "POST", "/security/login",
         {"username": "admin", "password": "admin", "provider": "db"},
@@ -97,6 +176,9 @@ def main() -> int:
 
     def post(path: str, payload: dict) -> dict:
         return _api("POST", path, payload)
+
+    def put(path: str, payload: dict) -> dict:
+        return _api("PUT", path, payload)
 
     # ──────────────────────────────────────────────────
     # 1. Register Trino Database
@@ -122,12 +204,13 @@ def main() -> int:
     # ──────────────────────────────────────────────────
     # 2. Register all gold tables as datasets
     # ──────────────────────────────────────────────────
-    existing_ds = get("/dataset/").get("result", [])
+    existing_ds = get("/dataset/?q=(page_size:200)").get("result", [])
     existing_by_key = {
         (r["schema"], r["table_name"]): r["id"] for r in existing_ds
     }
 
     ds_ids: dict[str, int] = {}
+    skipped = 0
     for schema, table in GOLD_TABLES:
         key = (schema, table)
         ds_key_name = f"{schema}.{table}"
@@ -135,80 +218,26 @@ def main() -> int:
             ds_ids[ds_key_name] = existing_by_key[key]
             continue
 
-        resp = post("/dataset/", {
-            "database": db_id,
-            "schema": schema,
-            "table_name": table,
-        })
-        ds_id = resp["id"]
-        ds_ids[ds_key_name] = ds_id
-        print(f"[dataset] {ds_key_name} id={ds_id}")
+        try:
+            resp = post("/dataset/", {
+                "database": db_id,
+                "schema": schema,
+                "table_name": table,
+            })
+            ds_id = resp["id"]
+            ds_ids[ds_key_name] = ds_id
+            print(f"[dataset] {ds_key_name} id={ds_id}")
+        except urllib.error.HTTPError as e:
+            if e.code == 422:
+                skipped += 1
+                print(f"[dataset] SKIP {ds_key_name}: {e.code} (table may not exist yet)")
+            else:
+                raise
 
-    print(f"[dataset] total: {len(ds_ids)}")
-
-    # ──────────────────────────────────────────────────
-    # 3. Create charts from key gold datasets
-    # ──────────────────────────────────────────────────
-    existing_charts = get("/chart/").get("result", [])
-
-    # Chart definitions: (name, viz_type, datasource_key, params)
-    CHART_DEFS = [
-        # KPI overview
-        ("Daily Revenue", "echarts_timeseries_bar", "nyc_gold.kpi_daily_overview",
-         {"metrics": ["total_revenue"], "groupby": ["pickup_date"]}),
-        ("Daily Trips", "echarts_timeseries_line", "nyc_gold.kpi_daily_overview",
-         {"metrics": ["trip_count"], "groupby": ["pickup_date"]}),
-        ("Revenue by Borough", "pie", "nyc_gold.kpi_borough_comparison",
-         {"metrics": ["total_revenue"], "groupby": ["borough"]}),
-        ("Payment Trends", "echarts_timeseries_bar", "nyc_gold.kpi_payment_trends",
-         {"metrics": ["trip_count"], "groupby": ["payment_type"]}),
-        ("Top Pickup Zones", "table", "nyc_gold.route_top_pickup_zones",
-         {}),
-        ("Airport Trip Analysis", "table", "nyc_gold.route_airport_analysis",
-         {}),
-        ("Zone Performance", "table", "nyc_gold.kpi_zone_performance",
-         {}),
-        ("Borough OD Matrix", "table", "nyc_gold.od_borough_matrix",
-         {}),
-        ("Hourly Heatmap", "echarts_timeseries_bar", "nyc_gold.fact_trips_hourly",
-         {"metrics": ["trip_count"], "groupby": ["pickup_hour"]}),
-        ("Data Quality Summary", "table", "nyc_gold.dq_validation_summary",
-         {}),
-        ("Tip Rate by Zone", "table", "nyc_gold.kpi_zone_net_flow",
-         {}),
-        ("Weekly Trends", "echarts_timeseries_bar", "nyc_gold.kpi_weekly_trends",
-         {"metrics": ["trip_count"], "groupby": ["week_start"]}),
-    ]
-
-    chart_ids: dict[str, int] = {}
-    for name, viz, ds_key, params in CHART_DEFS:
-        ds_id = ds_ids.get(ds_key)
-        if ds_id is None:
-            print(f"[chart] SKIP {name}: datasource {ds_key} not found")
-            continue
-
-        found = [
-            r for r in existing_charts
-            if r["slice_name"] == name
-            and r.get("datasource_id") == ds_id
-        ]
-        if found:
-            chart_ids[name] = found[0]["id"]
-            continue
-
-        payload = {
-            "slice_name": name,
-            "viz_type": viz,
-            "datasource_id": ds_id,
-            "datasource_type": "table",
-            "params": json.dumps(params),
-        }
-        resp = post("/chart/", payload)
-        chart_ids[name] = resp["id"]
-        print(f"[chart] {name} ({viz}) id={resp['id']}")
+    print(f"[dataset] total: {len(ds_ids)} (skipped: {skipped})")
 
     # ──────────────────────────────────────────────────
-    # 4. Dashboard — NYC Taxi Gold Analytics
+    # 3. Dashboard — create first so charts can link to it
     # ──────────────────────────────────────────────────
     dash_slug = "nyc-taxi-gold"
     dash_list = get("/dashboard/")
@@ -227,18 +256,52 @@ def main() -> int:
     else:
         print(f"[dashboard] exists: id={dash_id}")
 
-    # Add charts to dashboard
-    existing_dash_charts = get(f"/dashboard/{dash_id}/charts").get("result", [])
-    existing_chart_ids = {c["id"] for c in existing_dash_charts}
-    added = 0
-    for name, cid in chart_ids.items():
-        if cid not in existing_chart_ids:
-            post(f"/dashboard/{dash_id}/charts", {
-                "chart_id": cid,
-            })
-            added += 1
-    if added:
-        print(f"[dashboard] added {added} charts")
+    # ──────────────────────────────────────────────────
+    # 4. Create charts, linked to dashboard
+    # ──────────────────────────────────────────────────
+    existing_charts = get("/chart/?q=(page_size:200)").get("result", [])
+    existing_by_name: dict[str, dict] = {}
+    for c in existing_charts:
+        n = c.get("slice_name", "")
+        if n not in existing_by_name:
+            existing_by_name[n] = c
+
+    chart_ids: dict[str, int] = {}
+    for name, viz, ds_key, params in CHART_DEFS:
+        ds_id = ds_ids.get(ds_key)
+        if ds_id is None:
+            print(f"[chart] SKIP {name}: datasource {ds_key} not found")
+            continue
+
+        existing = existing_by_name.get(name)
+        if existing and existing.get("datasource_id") == ds_id:
+            cid = existing["id"]
+            chart_ids[name] = cid
+            # Update params + dashboard link (idempotent)
+            dashboards = existing.get("dashboards", [])
+            db_list = [d["id"] if isinstance(d, dict) else d for d in dashboards]
+            update = {}
+            if dash_id not in db_list:
+                db_list.append(dash_id)
+                update["dashboards"] = db_list
+            # Always refresh params (timeseries charts need granularity_sqla)
+            update["params"] = json.dumps(params)
+            if update:
+                put(f"/chart/{cid}", update)
+                print(f"[chart] updated {name} id={cid}")
+            continue
+
+        # Create new chart with dashboard link
+        resp = post("/chart/", {
+            "slice_name": name,
+            "viz_type": viz,
+            "datasource_id": ds_id,
+            "datasource_type": "table",
+            "params": json.dumps(params),
+            "dashboards": [dash_id],
+        })
+        chart_ids[name] = resp["id"]
+        print(f"[chart] {name} ({viz}) id={resp['id']}")
 
     print(
         f"\n{'='*60}\n"
@@ -248,6 +311,17 @@ def main() -> int:
         f"{'='*60}"
     )
     return 0
+
+
+def _req(method: str, path: str, data: dict | None = None) -> dict:
+    """Unauthenticated request (login only)."""
+    headers = {"Content-Type": "application/json"}
+    data_bytes = json.dumps(data).encode() if data else None
+    r = urllib.request.Request(
+        f"{BASE}{path}", data=data_bytes, headers=headers, method=method
+    )
+    with urllib.request.urlopen(r) as resp:
+        return json.loads(resp.read())
 
 
 if __name__ == "__main__":
