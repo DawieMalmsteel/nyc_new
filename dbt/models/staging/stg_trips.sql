@@ -21,12 +21,12 @@ with src as (
     cast(tolls_amount as double)                        as tolls_amount,
     cast(improvement_surcharge as double)               as improvement_surcharge,
     cast(total_amount as double)                        as total_amount,
-    nullif(pickup_borough, 'Unknown')                    as pickup_borough,
+    nullif(nullif(nullif(pickup_borough, 'Unknown'), 'N/A'), 'NV') as pickup_borough,
     nullif(nullif(pickup_zone, 'N/A'), 'NV')             as pickup_zone,
-    nullif(pickup_service_zone, 'N/A')                   as pickup_service_zone,
-    nullif(dropoff_borough, 'Unknown')                   as dropoff_borough,
+    nullif(nullif(pickup_service_zone, 'N/A'), 'NV')     as pickup_service_zone,
+    nullif(nullif(nullif(dropoff_borough, 'Unknown'), 'N/A'), 'NV') as dropoff_borough,
     nullif(nullif(dropoff_zone, 'N/A'), 'NV')            as dropoff_zone,
-    nullif(dropoff_service_zone, 'N/A')                  as dropoff_service_zone,
+    nullif(nullif(dropoff_service_zone, 'N/A'), 'NV')    as dropoff_service_zone,
     cast(pickup_year as integer)                        as pickup_year,
     cast(pickup_month as integer)                       as pickup_month
   from hive.nyc.trips
