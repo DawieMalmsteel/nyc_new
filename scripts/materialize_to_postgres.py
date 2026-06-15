@@ -103,8 +103,29 @@ def main() -> int:
 
             # Get column info from the result description
             col_names = [d[0] for d in trino_cur.description]
-            col_defs = [f'"{c}" TEXT' for c in col_names]
-
+            trino_types = [d[1] for d in trino_cur.description]
+            TYPE_MAP = {
+                "varchar": "TEXT",
+                "char": "TEXT",
+                "text": "TEXT",
+                "bigint": "BIGINT",
+                "integer": "INTEGER",
+                "int": "INTEGER",
+                "smallint": "SMALLINT",
+                "tinyint": "SMALLINT",
+                "double": "DOUBLE PRECISION",
+                "real": "REAL",
+                "date": "DATE",
+                "timestamp": "TIMESTAMP",
+                "timestamp(3)": "TIMESTAMP",
+                "timestamp with time zone": "TIMESTAMPTZ",
+                "boolean": "BOOLEAN",
+                "decimal": "NUMERIC",
+            }
+            col_defs = [
+                f'"{col}" {TYPE_MAP.get(ttype.lower(), "TEXT")}'
+                for col, ttype in zip(col_names, trino_types)
+            ]
             # Drop + recreate in Postgres
             pg_cur.execute(f'DROP TABLE IF EXISTS "{name}"')
             pg_cur.execute(f'CREATE TABLE "{name}" ({", ".join(col_defs)})')
