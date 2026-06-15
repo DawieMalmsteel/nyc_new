@@ -250,4 +250,4 @@ with DAG(
     spark_streaming >> trino_bootstrap
     
     trino_bootstrap >> dbt_build >> gold_export
-    trino_bootstrap >> dbt_build >> materialize_postgres >> superset_bootstrap >> analytics_check
+    dbt_build >> materialize_postgres >> superset_bootstrap >> analytics_check

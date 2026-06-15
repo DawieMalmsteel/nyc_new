@@ -25,6 +25,9 @@ build:
     - image: nyc-airflow
       context: .
       docker: { dockerfile: docker/airflow.Dockerfile }
+    - image: nyc-superset
+      context: .
+      docker: { dockerfile: docker/superset.Dockerfile }
 deploy:
   helm:
     releases:

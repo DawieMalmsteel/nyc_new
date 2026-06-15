@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Copy gold datasets from Trino to Postgres analytics database.
+"""Copy gold datasets from Trino dbt views to Postgres analytics database.
 
-Reads each gold table from hive.nyc_gold via Trino, then DROP/CREATE/INSERT
-into postgres-analytics. Idempotent — safe to re-run.
+Reads each gold dataset's SQL directly from export_gold_to_minio.py's
+GOLD_DATASETS definition, executes against Trino, and INSERTs into Postgres.
+Does NOT depend on gold_export — both can run in parallel.
 
 Usage:
     python3 scripts/materialize_to_postgres.py
@@ -57,48 +58,15 @@ def wait_for_trino() -> None:
     raise SystemExit("Trino not ready")
 
 
-# Key gold tables to materialize into Postgres.
-# These are all aggregated (< 300K rows each) — safe for Postgres.
-TABLES = [
-    "fact_trips_daily",
-    "fact_trips_hourly",
-    "fact_trips_hourly_zone",
-    "fact_trips_borough",
-    "dim_zone",
-    "dim_zone_grouped",
-    "dim_date",
-    "dim_vendor",
-    "dim_payment_type",
-    "dim_rate_code",
-    "kpi_daily_overview",
-    "kpi_weekly_trends",
-    "kpi_monthly_summary",
-    "kpi_borough_comparison",
-    "kpi_zone_performance",
-    "kpi_zone_net_flow",
-    "kpi_payment_trends",
-    "kpi_vendor_performance",
-    "route_top_pickup_zones",
-    "route_top_dropoff_zones",
-    "route_popular_routes",
-    "route_airport_analysis",
-    "route_airport_zone_matrix",
-    "route_cross_borough",
-    "od_borough_matrix",
-    "ops_peak_hours_heatmap",
-    "ops_trip_distance_distribution",
-    "ops_passenger_count_pattern",
-    "ops_utilization_rate",
-    "dq_validation_summary",
-    "dq_invalid_by_reason",
-    "dq_row_count_trend",
-    "dq_batch_metadata",
-]
-
-
 def main() -> int:
     wait_for_postgres()
     wait_for_trino()
+
+    # Import GOLD_DATASETS from the export script — single source of truth.
+    # We run the exact same SQL queries, just INSERT into Postgres
+    # instead of CTAS to MinIO.
+    sys.path.insert(0, os.path.dirname(__file__) or ".")
+    from export_gold_to_minio import GOLD_DATASETS
 
     import psycopg2
     from trino.dbapi import connect as trino_connect
@@ -119,76 +87,56 @@ def main() -> int:
     total_ok = 0
     total_fail = 0
 
-    for table in TABLES:
-        print(f"[materialize] {table}: fetching schema...")
+    for ds in GOLD_DATASETS:
+        name = ds["name"]
+        sql = ds["sql"]
+        print(f"[materialize] {name}: running source query...")
 
-        # Get column info from Trino
-        trino_cur.execute(
-            "SELECT column_name, data_type FROM hive.information_schema.columns "
-            "WHERE table_schema = 'nyc_gold' AND table_name = ? "
-            "ORDER BY ordinal_position",
-            (table,),
-        )
-        columns = trino_cur.fetchall()
-        if not columns:
-            print(f"[materialize] {table}: SKIP — not found in Trino")
-            continue
-
-        # Map Trino types to Postgres types
-        type_map = {
-            "varchar": "TEXT",
-            "bigint": "BIGINT",
-            "integer": "INTEGER",
-            "double": "DOUBLE PRECISION",
-            "date": "DATE",
-            "timestamp(3)": "TIMESTAMP",
-            "boolean": "BOOLEAN",
-        }
-        col_defs = [
-            f'"{col}" {type_map.get(dtype.lower(), "TEXT")}'
-            for col, dtype in columns
-        ]
-        col_names = [f'"{col}"' for col, _ in columns]
-
-        # Drop and recreate
-        pg_cur.execute(f'DROP TABLE IF EXISTS "{table}"')
-        pg_cur.execute(
-            f'CREATE TABLE "{table}" ({", ".join(col_defs)})'
-        )
-
-        # Fetch data from Trino in chunks and INSERT
-        trino_cur.execute(f"SELECT * FROM hive.nyc_gold.{table}")
-        batch_size = 5000
-        total_rows = 0
-        insert_sql = (
-            f'INSERT INTO "{table}" ({", ".join(col_names)}) '
-            f"VALUES %s"
-        )
-
-        start = time.time()
-        while True:
-            rows = trino_cur.fetchmany(batch_size)
+        try:
+            # Run the gold dataset SQL directly against Trino
+            trino_cur.execute(sql)
+            rows = trino_cur.fetchall()
             if not rows:
-                break
-            # Convert None/NaN to postgres-safe values
+                print(f"[materialize] {name}: done (0 rows)")
+                total_ok += 1
+                continue
+
+            # Get column info from the result description
+            col_names = [d[0] for d in trino_cur.description]
+            col_defs = [f'"{c}" TEXT' for c in col_names]
+
+            # Drop + recreate in Postgres
+            pg_cur.execute(f'DROP TABLE IF EXISTS "{name}"')
+            pg_cur.execute(f'CREATE TABLE "{name}" ({", ".join(col_defs)})')
+
+            # Batch INSERT
+            from psycopg2.extras import execute_values
+            placeholders = ", ".join(["%s"] * len(col_names))
+            insert_sql = (
+                f'INSERT INTO "{name}" ({", ".join(f"{c}" for c in col_names)}) '
+                f"VALUES %s"
+            )
+
+            # Clean NaN → None for Postgres
             safe_rows = []
             for row in rows:
                 safe_rows.append(tuple(
                     None if v is None else
-                    None if isinstance(v, float) and v != v  # NaN
+                    None if isinstance(v, float) and v != v  # NaN check
                     else v
                     for v in row
                 ))
-            from psycopg2.extras import execute_values
-            execute_values(pg_cur, insert_sql, safe_rows, page_size=batch_size)
-            total_rows += len(rows)
 
-        elapsed = time.time() - start
-        total_ok += 1
-        print(
-            f"[materialize] {table}: done "
-            f"({total_rows} rows, {elapsed:.1f}s)"
-        )
+            start = time.time()
+            execute_values(pg_cur, insert_sql, safe_rows, page_size=5000)
+            elapsed = time.time() - start
+
+            total_ok += 1
+            print(f"[materialize] {name}: done ({len(rows)} rows, {elapsed:.1f}s)")
+
+        except Exception as e:
+            total_fail += 1
+            print(f"[materialize] {name}: FAILED — {e}", file=sys.stderr)
 
     trino_conn.close()
     pg_conn.close()
