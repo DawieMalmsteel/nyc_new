@@ -71,10 +71,11 @@ def _m(col_name: str, aggregate: str = "SUM") -> dict:
 # ── Chart definitions: (name, viz_type, datasource_key, params) ──
 # Timeseries/pie charts: metrics must be adhoc objects (columns are not metrics).
 # Table charts: omit metrics — columns are auto-detected.
-# ── Table chart defaults: all_columns shows all columns ──
-_T = {"all_columns": [], "row_limit": 1000, "time_range": "No filter"}
-_T100 = {"all_columns": [], "row_limit": 100, "time_range": "No filter"}
-_T500 = {"all_columns": [], "row_limit": 500, "time_range": "No filter"}
+# ── Table chart defaults (params built dynamically from dataset columns) ──
+# Use marker so chart creation fetches columns at runtime
+_T = None  # placeholder — resolved per-dataset below
+_T100 = "row_limit_100"  # marker
+_T500 = "row_limit_500"
 
 CHART_DEFS = [
     # ── FACT ──
@@ -142,7 +143,7 @@ CHART_DEFS = [
     ("Row Count Trend", "echarts_timeseries_line", "nyc_gold.dq_row_count_trend",
      {"metrics": [_m("trip_count")], "granularity_sqla": "pickup_date",
       "time_range": "No filter"}),
-    ("Batch Metadata", "table", "nyc_gold.dq_batch_metadata", {"all_columns": [], "row_limit": 10, "time_range": "No filter"}),
+    ("Batch Metadata", "table", "nyc_gold.dq_batch_metadata", _T),
 ]
 
 
@@ -231,6 +232,17 @@ def main() -> int:
 
     print(f"[dataset] total: {len(ds_ids)} (skipped: {skipped})")
 
+    # ── Fetch column info per dataset (used for table chart groupby) ──
+    ds_columns: dict[str, list[str]] = {}
+    for ds_key, ds_id in ds_ids.items():
+        try:
+            info = get(f"/dataset/{ds_id}")
+            cols = [c["column_name"] for c in info.get("result", {}).get("columns", [])]
+            ds_columns[ds_key] = cols
+        except Exception as ex:
+            print(f"[warn] dataset {ds_key} columns fetch failed: {ex}")
+            ds_columns[ds_key] = []
+
     # ──────────────────────────────────────────────────
     # 3. Dashboard — create first so charts can link to it
     # ──────────────────────────────────────────────────
@@ -245,7 +257,7 @@ def main() -> int:
         resp = post("/dashboard/", {
             "dashboard_title": "NYC Taxi Gold Analytics",
             "slug": dash_slug,
-            "json_metadata": '{"cross_filters_enabled": false}',
+            "json_metadata": '{"cross_filters_enabled": false, "default_filters": "{}"}',
         })
         dash_id = resp["id"]
         print(f"[dashboard] created: id={dash_id}")
@@ -268,6 +280,14 @@ def main() -> int:
         if ds_id is None:
             print(f"[chart] SKIP {name}: datasource {ds_key} not found")
             continue
+
+        # Resolve table chart params: build groupby from dataset columns
+        if params is _T or params is _T100 or params is _T500:
+            cols = ds_columns.get(ds_key, [])
+            groupby_cols = [c for c in cols if not c.startswith("pickup_date")][:4]
+            rl = 100 if params is _T100 else 500 if params is _T500 else 1000
+            params = {"groupby": groupby_cols, "metrics": ["count"],
+                      "row_limit": rl, "time_range": "No filter"}
 
         existing = existing_by_name.get(name)
         if existing and existing.get("datasource_id") == ds_id:
