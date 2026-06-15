@@ -160,10 +160,9 @@ def main() -> int:
         trino_cur.execute(f"SELECT * FROM hive.nyc_gold.{table}")
         batch_size = 5000
         total_rows = 0
-        placeholders = ", ".join(["%s"] * len(columns))
         insert_sql = (
             f'INSERT INTO "{table}" ({", ".join(col_names)}) '
-            f"VALUES ({placeholders})"
+            f"VALUES %s"
         )
 
         start = time.time()
