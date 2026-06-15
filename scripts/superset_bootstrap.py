@@ -242,14 +242,15 @@ def main() -> int:
             _api("DELETE", f"/chart/{cid}")
             print(f"[chart] deleted old {name} id={cid} (recreating)")
 
-        # Build params
-        if viz == "table" or viz.startswith("echarts"):
-            orderby_col = (params.get("groupby", [None])[0]
-                           if params.get("groupby") else
-                           params.get("metrics", [{}])[0].get("label", None))
-            if orderby_col:
-                params["orderby"] = [[orderby_col, False]]
-                params["order_desc"] = False
+        # Set default orderby to prevent 'Field may not be null' on dashboard queries
+        orderby_col = (params.get("groupby", [None])[0]
+                       if params.get("groupby") else
+                       params.get("metrics", [{}])[0].get("label", None))
+        if orderby_col:
+            params["orderby"] = [[orderby_col, False]]
+            params["order_desc"] = False
+        else:
+            params["order_desc"] = False
 
         resp = post("/chart/", {
             "slice_name": name,
