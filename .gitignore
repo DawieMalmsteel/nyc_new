@@ -85,3 +85,5 @@ tmp/
 # ── Process / PID files ──
 *.pid
 *.port-fwd
+dbt/target/
+data/data/
