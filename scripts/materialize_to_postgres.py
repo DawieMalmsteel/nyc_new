@@ -112,6 +112,7 @@ def main() -> int:
 
     trino_conn = trino_connect(
         host=TRINO_HOST, port=TRINO_PORT, user="materialize",
+        catalog="hive",
     )
     trino_cur = trino_conn.cursor()
 
@@ -123,7 +124,7 @@ def main() -> int:
 
         # Get column info from Trino
         trino_cur.execute(
-            "SELECT column_name, data_type FROM information_schema.columns "
+            "SELECT column_name, data_type FROM hive.information_schema.columns "
             "WHERE table_schema = 'nyc_gold' AND table_name = ? "
             "ORDER BY ordinal_position",
             (table,),
