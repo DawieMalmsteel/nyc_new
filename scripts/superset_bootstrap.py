@@ -62,92 +62,78 @@ GOLD_TABLES = [
     ("nyc_gold", "dq_batch_metadata"),
 ]
 
+# ── Helper: adhoc metric (Superset 4.0 columns need explicit aggregate) ──
+def _m(col_name: str, aggregate: str = "SUM") -> dict:
+    return {"aggregate": aggregate, "column": {"column_name": col_name},
+            "expressionType": "SIMPLE", "label": col_name}
+
+
 # ── Chart definitions: (name, viz_type, datasource_key, params) ──
-# Timeseries charts need granularity_sqla (datetime column).
-# Pie/bar charts need groupby + metrics.
-# Table charts need nothing special.
+# Timeseries/pie charts: metrics must be adhoc objects (columns are not metrics).
+# Table charts: omit metrics — columns are auto-detected.
 CHART_DEFS = [
-    # ── FACT tables ──
+    # ── FACT ──
     ("Hourly Trip Pattern", "echarts_timeseries_bar", "nyc_gold.fact_trips_hourly",
-     {"metrics": ["trip_count"], "groupby": ["pickup_hour"],
+     {"metrics": [_m("trip_count")], "groupby": ["pickup_hour"],
       "granularity_sqla": "pickup_date", "time_range": "No filter"}),
-    ("Hourly Zone Detail", "table", "nyc_gold.fact_trips_hourly_zone",
-     {}),
-    ("Borough Trip Summary", "table", "nyc_gold.fact_trips_borough",
-     {}),
+    ("Hourly Zone Detail", "table", "nyc_gold.fact_trips_hourly_zone", {}),
+    ("Borough Trip Summary", "table", "nyc_gold.fact_trips_borough", {}),
 
-    # ── DIM tables ──
-    ("Zone Directory", "table", "nyc_gold.dim_zone",
-     {}),
-    ("Zone Groups", "table", "nyc_gold.dim_zone_grouped",
-     {}),
+    # ── DIM ──
+    ("Zone Directory", "table", "nyc_gold.dim_zone", {}),
+    ("Zone Groups", "table", "nyc_gold.dim_zone_grouped", {}),
 
-    # ── KPI tables ──
+    # ── KPI ──
     ("Daily Revenue (KPI)", "echarts_timeseries_bar", "nyc_gold.kpi_daily_overview",
-     {"metrics": ["revenue"], "granularity_sqla": "pickup_date",
+     {"metrics": [_m("revenue")], "granularity_sqla": "pickup_date",
       "time_range": "No filter"}),
     ("Daily Trips (KPI)", "echarts_timeseries_line", "nyc_gold.kpi_daily_overview",
-     {"metrics": ["trips"], "granularity_sqla": "pickup_date",
+     {"metrics": [_m("trips")], "granularity_sqla": "pickup_date",
       "time_range": "No filter"}),
     ("Daily Utilization", "echarts_timeseries_line", "nyc_gold.kpi_daily_overview",
-     {"metrics": ["utilization_rate"], "granularity_sqla": "pickup_date",
+     {"metrics": [_m("utilization_rate", "AVG")], "granularity_sqla": "pickup_date",
       "time_range": "No filter"}),
     ("Weekly Trip Trends", "echarts_timeseries_bar", "nyc_gold.kpi_weekly_trends",
-     {"metrics": ["trip_count"], "granularity_sqla": "week_start",
+     {"metrics": [_m("trip_count")], "granularity_sqla": "week_start",
       "time_range": "No filter"}),
     ("Weekly Growth Rate", "echarts_timeseries_line", "nyc_gold.kpi_weekly_trends",
-     {"metrics": ["trip_growth_pct", "revenue_growth_pct"],
+     {"metrics": [_m("trip_growth_pct", "AVG"), _m("revenue_growth_pct", "AVG")],
       "granularity_sqla": "week_start", "time_range": "No filter"}),
-    ("Monthly Revenue Growth", "table", "nyc_gold.kpi_monthly_summary",
-     {}),
+    ("Monthly Revenue Growth", "table", "nyc_gold.kpi_monthly_summary", {}),
     ("Borough Market Share", "pie", "nyc_gold.kpi_borough_comparison",
-     {"metrics": ["revenue"], "groupby": ["pickup_borough"]}),
-    ("Zone Performance", "table", "nyc_gold.kpi_zone_performance",
-     {}),
-    ("Zone Net Flow", "table", "nyc_gold.kpi_zone_net_flow",
-     {}),
+     {"metrics": [_m("revenue")], "groupby": ["pickup_borough"]}),
+    ("Zone Performance", "table", "nyc_gold.kpi_zone_performance", {}),
+    ("Zone Net Flow", "table", "nyc_gold.kpi_zone_net_flow", {}),
     ("Payment Types", "pie", "nyc_gold.kpi_payment_trends",
-     {"metrics": ["trip_count"], "groupby": ["payment_type"]}),
+     {"metrics": [_m("trip_count")], "groupby": ["payment_type"]}),
     ("Vendor Market Share", "pie", "nyc_gold.kpi_vendor_performance",
-     {"metrics": ["trips"], "groupby": ["vendor_name"]}),
+     {"metrics": [_m("trips")], "groupby": ["vendor_name"]}),
 
-    # ── ROUTE tables ──
-    ("Top Pickup Zones", "table", "nyc_gold.route_top_pickup_zones",
-     {}),
-    ("Top Dropoff Zones", "table", "nyc_gold.route_top_dropoff_zones",
-     {}),
-    ("Popular Routes", "table", "nyc_gold.route_popular_routes",
-     {}),
-    ("Airport Trip Analysis", "table", "nyc_gold.route_airport_analysis",
-     {}),
-    ("Airport Zone Matrix", "table", "nyc_gold.route_airport_zone_matrix",
-     {}),
-    ("Cross-Borough Routes", "table", "nyc_gold.route_cross_borough",
-     {}),
-    ("Borough OD Matrix", "table", "nyc_gold.od_borough_matrix",
-     {}),
+    # ── ROUTE ──
+    ("Top Pickup Zones", "table", "nyc_gold.route_top_pickup_zones", {}),
+    ("Top Dropoff Zones", "table", "nyc_gold.route_top_dropoff_zones", {}),
+    ("Popular Routes", "table", "nyc_gold.route_popular_routes", {}),
+    ("Airport Trip Analysis", "table", "nyc_gold.route_airport_analysis", {}),
+    ("Airport Zone Matrix", "table", "nyc_gold.route_airport_zone_matrix", {}),
+    ("Cross-Borough Routes", "table", "nyc_gold.route_cross_borough", {}),
+    ("Borough OD Matrix", "table", "nyc_gold.od_borough_matrix", {}),
 
-    # ── OPS tables ──
-    ("Peak Hours Heatmap", "table", "nyc_gold.ops_peak_hours_heatmap",
-     {}),
-    ("Trip Distance Distribution", "table", "nyc_gold.ops_trip_distance_distribution",
-     {}),
-    ("Passenger Count Pattern", "table", "nyc_gold.ops_passenger_count_pattern",
-     {}),
+    # ── OPS ──
+    ("Peak Hours Heatmap", "table", "nyc_gold.ops_peak_hours_heatmap", {}),
+    ("Trip Distance Distribution", "table", "nyc_gold.ops_trip_distance_distribution", {}),
+    ("Passenger Count Pattern", "table", "nyc_gold.ops_passenger_count_pattern", {}),
     ("Utilization Rate", "echarts_timeseries_line", "nyc_gold.ops_utilization_rate",
-     {"metrics": ["tip_rate_pct", "multi_passenger_pct"],
+     {"metrics": [_m("tip_rate_pct", "AVG"), _m("multi_passenger_pct", "AVG")],
       "granularity_sqla": "pickup_date", "time_range": "No filter"}),
 
-    # ── DQ tables ──
-    ("Data Quality Summary", "table", "nyc_gold.dq_validation_summary",
-     {}),
+    # ── DQ ──
+    ("Data Quality Summary", "table", "nyc_gold.dq_validation_summary", {}),
     ("Invalid by Reason", "pie", "nyc_gold.dq_invalid_by_reason",
-     {"metrics": ["count"], "groupby": ["reason"]}),
+     {"metrics": [_m("count")], "groupby": ["reason"]}),
     ("Row Count Trend", "echarts_timeseries_line", "nyc_gold.dq_row_count_trend",
-     {"metrics": ["trip_count"], "granularity_sqla": "pickup_date",
+     {"metrics": [_m("trip_count")], "granularity_sqla": "pickup_date",
       "time_range": "No filter"}),
-    ("Batch Metadata", "table", "nyc_gold.dq_batch_metadata",
-     {}),
+    ("Batch Metadata", "table", "nyc_gold.dq_batch_metadata", {}),
 ]
 
 
