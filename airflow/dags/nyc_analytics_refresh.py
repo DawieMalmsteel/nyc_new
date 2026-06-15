@@ -1,11 +1,13 @@
 """DAG: nyc_analytics_refresh
 
 Refresh analytics layer (assumes Spark streaming already running):
-  1. dbt build (rebuild views + data quality tests).
-  2. Superset bootstrap (refresh dashboard assets).
-  3. Analytics SQL validation.
+  1. dbt build (rebuild Trino views + data quality tests).
+  2. gold_export (CTAS Parquet to MinIO).
+  3. materialize_postgres (copy gold tables to Postgres analytics DB).
+  4. Superset bootstrap (register DBs, datasets, charts).
+  5. Analytics SQL validation.
 
-Schedule: manual trigger; set schedule="@hourly" in production.
+Schedule: weekly; manual trigger for ad-hoc refresh.
 """
 
 from __future__ import annotations
@@ -23,23 +25,23 @@ DEFAULT_ARGS = {
     "owner": "nyc",
     "depends_on_past": False,
     "retries": 0,
-    "execution_timeout": timedelta(minutes=15),
+    "execution_timeout": timedelta(minutes=30),
 }
 
-# Định nghĩa cấu hình Volume Mount dùng chung cho K8s Pods
 project_volume = k8s.V1Volume(
     name="project-files",
-    persistent_volume_claim=k8s.V1PersistentVolumeClaimVolumeSource(claim_name="project-files-pvc")
+    persistent_volume_claim=k8s.V1PersistentVolumeClaimVolumeSource(
+        claim_name="project-files-pvc"
+    ),
 )
 project_volume_mount = k8s.V1VolumeMount(
-    name="project-files",
-    mount_path="/opt/project"
+    name="project-files", mount_path="/opt/project"
 )
 
 
 with DAG(
     dag_id="nyc_analytics_refresh",
-    description="Refresh: dbt + Superset + analytics validation",
+    description="Refresh: dbt + gold + Postgres + Superset",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2026, 1, 1),
     schedule="@weekly",
@@ -48,7 +50,6 @@ with DAG(
     tags=["nyc", "analytics"],
 ) as dag:
 
-    # 1. dbt Build chạy trực tiếp dạng K8s Operator chuẩn chỉnh
     dbt_build = KubernetesPodOperator(
         namespace="nyc-taxi",
         image="nyc-dbt:k8s",
@@ -64,7 +65,7 @@ with DAG(
         volume_mounts=[project_volume_mount],
         get_logs=True,
         in_cluster=True,
-        service_account_name="airflow-sa"
+        service_account_name="airflow-sa",
     )
 
     gold_export = KubernetesPodOperator(
@@ -83,7 +84,30 @@ with DAG(
         volume_mounts=[project_volume_mount],
         get_logs=True,
         in_cluster=True,
-        service_account_name="airflow-sa"
+        service_account_name="airflow-sa",
+    )
+
+    materialize_postgres = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:k8s",
+        image_pull_policy="IfNotPresent",
+        name="pg-materialize",
+        task_id="materialize_postgres",
+        cmds=["python3"],
+        arguments=["/opt/project/scripts/materialize_to_postgres.py"],
+        env_vars=[
+            k8s.V1EnvVar(name="TRINO_HOST", value="svc-trino"),
+            k8s.V1EnvVar(name="TRINO_PORT", value="8080"),
+            k8s.V1EnvVar(name="PG_ANALYTICS_HOST", value="svc-postgres-analytics"),
+            k8s.V1EnvVar(name="PG_ANALYTICS_USER", value="analytics"),
+            k8s.V1EnvVar(name="PG_ANALYTICS_PASSWORD", value="analytics"),
+            k8s.V1EnvVar(name="PG_ANALYTICS_DB", value="nyc_analytics"),
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa",
     )
 
     superset_bootstrap = KubernetesPodOperator(
@@ -95,14 +119,23 @@ with DAG(
         cmds=["python3"],
         arguments=["/opt/project/scripts/superset_bootstrap.py"],
         env_vars=[
-            k8s.V1EnvVar(name="SUPERSET_URL", value="http://svc-superset:8088"),
-            k8s.V1EnvVar(name="TRINO_URI", value="trino://analytics@svc-trino:8080/hive"),
+            k8s.V1EnvVar(
+                name="SUPERSET_URL", value="http://svc-superset:8088"
+            ),
+            k8s.V1EnvVar(
+                name="TRINO_URI",
+                value="trino://analytics@svc-trino:8080/hive",
+            ),
+            k8s.V1EnvVar(
+                name="PG_ANALYTICS_URI",
+                value="postgresql://analytics:analytics@svc-postgres-analytics:5432/nyc_analytics",
+            ),
         ],
         volumes=[project_volume],
         volume_mounts=[project_volume_mount],
         get_logs=True,
         in_cluster=True,
-        service_account_name="airflow-sa"
+        service_account_name="airflow-sa",
     )
 
     analytics_check = KubernetesPodOperator(
@@ -121,8 +154,7 @@ with DAG(
         volume_mounts=[project_volume_mount],
         get_logs=True,
         in_cluster=True,
-        service_account_name="airflow-sa"
+        service_account_name="airflow-sa",
     )
 
-    # Luồng tuần tự
-    dbt_build >> gold_export >> superset_bootstrap >> analytics_check
+    dbt_build >> gold_export >> materialize_postgres >> superset_bootstrap >> analytics_check

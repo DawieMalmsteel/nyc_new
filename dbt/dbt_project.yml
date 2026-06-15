@@ -19,3 +19,6 @@ models:
       +materialized: view
     gold:
       +materialized: view
+    +postgres_analytics:
+      gold:
+        +materialized: table

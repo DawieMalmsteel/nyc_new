@@ -181,6 +181,30 @@ with DAG(
         service_account_name="airflow-sa"
     )
 
+    # 5b. Materialize gold tables into Postgres analytics DB
+    materialize_postgres = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:k8s",
+        image_pull_policy="IfNotPresent",
+        name="pg-materialize",
+        task_id="materialize_postgres",
+        cmds=["python3"],
+        arguments=["/opt/project/scripts/materialize_to_postgres.py"],
+        env_vars=[
+            k8s.V1EnvVar(name="TRINO_HOST", value="svc-trino"),
+            k8s.V1EnvVar(name="TRINO_PORT", value="8080"),
+            k8s.V1EnvVar(name="PG_ANALYTICS_HOST", value="svc-postgres-analytics"),
+            k8s.V1EnvVar(name="PG_ANALYTICS_USER", value="analytics"),
+            k8s.V1EnvVar(name="PG_ANALYTICS_PASSWORD", value="analytics"),
+            k8s.V1EnvVar(name="PG_ANALYTICS_DB", value="nyc_analytics"),
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa",
+    )
+
     # 6. Superset Bootstrap
     superset_bootstrap = KubernetesPodOperator(
         namespace="nyc-taxi",
@@ -193,6 +217,7 @@ with DAG(
         env_vars=[
             k8s.V1EnvVar(name="SUPERSET_URL", value="http://svc-superset:8088"),
             k8s.V1EnvVar(name="TRINO_URI", value="trino://analytics@svc-trino:8080/hive"),
+            k8s.V1EnvVar(name="PG_ANALYTICS_URI", value="postgresql://analytics:analytics@svc-postgres-analytics:5432/nyc_analytics"),
         ],
         volumes=[project_volume],
         volume_mounts=[project_volume_mount],
@@ -225,4 +250,4 @@ with DAG(
     spark_batch >> trino_bootstrap
     spark_streaming >> trino_bootstrap
     
-    trino_bootstrap >> dbt_build >> gold_export >> superset_bootstrap >> analytics_check
+    trino_bootstrap >> dbt_build >> gold_export >> materialize_postgres >> superset_bootstrap >> analytics_check

@@ -9,3 +9,12 @@ nyc_taxi:
       database: hive
       schema: mart
       threads: 2
+    postgres_analytics:
+      type: postgres
+      host: "{{ env_var('PG_ANALYTICS_HOST', 'svc-postgres-analytics') }}"
+      port: "{{ env_var('PG_ANALYTICS_PORT', '5432') | int }}"
+      user: "{{ env_var('PG_ANALYTICS_USER', 'analytics') }}"
+      password: "{{ env_var('PG_ANALYTICS_PASSWORD', 'analytics') }}"
+      dbname: "{{ env_var('PG_ANALYTICS_DB', 'nyc_analytics') }}"
+      schema: public
+      threads: 2

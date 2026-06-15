@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-analytics
+  labels:
+    app: postgres-analytics
+spec:
+  replicas: 1
+  serviceName: svc-postgres-analytics
+  selector:
+    matchLabels:
+      app: postgres-analytics
+  template:
+    metadata:
+      labels:
+        app: postgres-analytics
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_USER
+          value: analytics
+        - name: POSTGRES_PASSWORD
+          value: analytics
+        - name: POSTGRES_DB
+          value: nyc_analytics
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - analytics
+            - -d
+            - nyc_analytics
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+        volumeMounts:
+        - name: postgres-analytics-data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-analytics-data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 5Gi

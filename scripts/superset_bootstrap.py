@@ -19,6 +19,10 @@ TRINO_URI = os.environ.get(
     "TRINO_URI",
     "trino://analytics@trino-coordinator:8080/hive"
 )
+PG_ANALYTICS_URI = os.environ.get(
+    "PG_ANALYTICS_URI",
+    "postgresql://analytics:analytics@svc-postgres-analytics:5432/nyc_analytics",
+)
 
 # ── Gold tables grouped by category ──
 GOLD_TABLES = [
@@ -194,8 +198,26 @@ def main() -> int:
         })
         db_id = resp["id"]
         print(f"[db] created: {db_name} id={db_id}")
+
+    # ──────────────────────────────────────────────────
+    # 1b. Register Postgres Analytics Database
+    # ──────────────────────────────────────────────────
+    pg_db_name = "NYC Analytics (Postgres)"
+    pg_db_id = next(
+        (r["id"] for r in dbs.get("result", [])
+         if r["database_name"] == pg_db_name), None
+    )
+    if pg_db_id is None:
+        resp = post("/database/", {
+            "database_name": pg_db_name,
+            "sqlalchemy_uri": PG_ANALYTICS_URI,
+            "allow_dml": True,
+            "expose_in_sqllab": True,
+        })
+        pg_db_id = resp["id"]
+        print(f"[db] created: {pg_db_name} id={pg_db_id}")
     else:
-        print(f"[db] exists: {db_name} id={db_id}")
+        print(f"[db] exists: {pg_db_name} id={pg_db_id}")
 
     # ──────────────────────────────────────────────────
     # 2. Register all gold tables as datasets
