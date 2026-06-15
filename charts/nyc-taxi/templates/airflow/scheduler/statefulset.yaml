@@ -56,10 +56,10 @@ spec:
         resources:
           requests:
             cpu: 300m
-            memory: 512Mi
+            memory: 2Gi
           limits:
-            cpu: 1
-            memory: 1Gi
+            cpu: 2
+            memory: 4Gi
       volumes:
       - name: entrypoint
         configMap:
