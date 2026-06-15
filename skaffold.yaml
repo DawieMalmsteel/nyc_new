@@ -74,6 +74,11 @@ deploy:
                   --exclude='*.pyo' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
+                echo "=== Syncing raw data to PVC ==="
+                tar cf - \
+                  --exclude='*.crc' \
+                  data/nyc-raw/ data/nyc-lookup/ \
+                  | docker exec -i kind-worker tar xf - -C /mnt/nyc-data
                 echo "=== Pre-deploy complete ==="
       after:
         - host:

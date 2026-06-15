@@ -31,9 +31,9 @@ spec:
             fi
           done
           echo "=== Uploading raw parquet ==="
-          mc cp --recursive /data/raw/yellow_taxi/ nyc/nyc-raw/yellow_taxi/
+          mc cp --recursive /data/nyc-raw/yellow_taxi/ nyc/nyc-raw/yellow_taxi/
           echo "=== Uploading lookup ==="
-          mc cp /data/lookup/taxi_zone_lookup.csv nyc/nyc-lookup/
+          mc cp /data/nyc-lookup/taxi_zone_lookup.csv nyc/nyc-lookup/
           echo "=== Done ==="
           mc ls nyc
         volumeMounts:

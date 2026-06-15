@@ -210,7 +210,7 @@ make k8s-logs JOB=name   # Tail logs for a job
 - **hostPath PVCs**: `raw-data-pv` → `/mnt/nyc-data`, `project-files-pv` → `/mnt/nyc-project`.
 - Custom images built via Skaffold: `nyc-pipeline-tools:k8s`, `nyc-dbt:k8s`, `nyc-airflow:k8s`.
 - **Skaffold Helm deployer**: `skaffold.yaml` defines 3 artifacts, sync rules, deploy hooks, and port-forwards.
-- **Deploy hooks** (pre-deploy): delete immutable Jobs, sync project files to kind-worker PVC.
+- **Deploy hooks** (pre-deploy): delete immutable Jobs, sync project files + raw data to kind-worker PVCs (`/mnt/nyc-project` + `/mnt/nyc-data`).
 - **Sync rules**: watch local `airflow/dags/`, `jobs/`, `scripts/`, `dbt/`, `charts/` — auto-push to PVC via `file-sync` pod.
 - **File-sync pod**: `charts/.../airflow/file-sync.yaml` — lightweight `sleep infinity` container running as root, PVC mounted at `/opt/project`, target for `skaffold sync`.
 - **Port-forwards** via skaffold `portForward` (39080-39087), or legacy `make k8s-ui` (uses `kubectl port-forward --address 0.0.0.0`).
@@ -261,6 +261,7 @@ make k8s-logs JOB=name   # Tail logs for a job
 |`charts/nyc-taxi/`|**Helm chart** — all K8s service manifests (airflow, spark, kafka, trino, minio, superset, debezium, etc.)|
 |`charts/nyc-taxi/templates/airflow/file-sync.yaml`|**File-sync pod** — `sleep infinity`, runs root, PVC mounted, target for hot-reload sync|
 |`charts/nyc-taxi/templates/namespace/namespace.yaml`|Namespace template with Helm labels/annotations|
+|`charts/nyc-taxi/templates/jobs/minio-setup.yaml`|**MinIO setup job** — creates buckets, uploads raw parquet + lookup từ PVC vào MinIO S3|
 |`charts/nyc-taxi/templates/jobs/topic-init.yaml`|Kafka topic init job — uses `entrypoint-topic-init` (wait-kafka + `svc-kafka:9092`)|
 |`charts/nyc-taxi/templates/jobs/postgres-init.yaml`|Postgres init job — uses `entrypoint-init-postgres` (Python psycopg2)|
 |`kind.yaml`|kind cluster config (3 nodes, port mappings)|
@@ -285,21 +286,27 @@ make k8s-logs JOB=name   # Tail logs for a job
 - **K8s port-forwards**: `--address 0.0.0.0` flag required. Use port range `39080+` (avoid kind NodePort conflict). Use `setsid -f` for survival.
 
 ### PVC Sync (tự động qua Skaffold)
-Trong K8s mode, scripts và configs chạy từ PVC (`/opt/project/` mounted từ kind-worker), không phải từ container image.
+Trong K8s mode, scripts và configs chạy từ PVC (`/opt/project/` mounted từ kind-worker), không phải từ container image. Raw data được sync vào `/mnt/nyc-data` rồi `minio-setup` job upload lên MinIO S3.
+
+**Data flow**: Host `data/` → kind-worker `/mnt/nyc-data/` → `minio-setup` job → MinIO `s3a://nyc-raw/`, `s3a://nyc-lookup/`
 
 **Tự động** (không cần thao tác thủ công):
-- `skaffold dev` chạy pre-deploy hook sync toàn bộ file → kind-worker PVC
+- `skaffold dev` chạy pre-deploy hook sync code → `/mnt/nyc-project`, raw data → `/mnt/nyc-data`
 - Khi file thay đổi, `skaffold sync` push thẳng vào `file-sync` pod → PVC → Airflow nhận thay đổi
 
 **Thủ công** (khi cần sync nhanh hoặc không dùng skaffold):
 ```bash
 cd /home/dwcks/vsf_gsm/nyc_new
+# Sync code
 tar cf - \
   --exclude='dbt/logs' --exclude='dbt/target' \
   --exclude='.git' --exclude='__pycache__' \
   --exclude='*.pyc' --exclude='*.pyo' \
   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
+# Sync raw data
+tar cf - data/nyc-raw/ data/nyc-lookup/ \
+  | docker exec -i kind-worker tar xf - -C /mnt/nyc-data
 ```
 
 ---
@@ -332,4 +339,5 @@ Trigger via Airflow UI (http://localhost:39085) or CLI (`make airflow-trigger DA
 - **verify_mart.py** uses `SET SESSION query_max_run_time='120s'` to avoid timeout on large aggregate queries.
 - **Service names in K8s**: Tất cả service names đều có prefix `svc-` (e.g., `svc-kafka`, `svc-minio`, `svc-postgres-cdc`). **Không** dùng tên thiếu prefix (e.g., `kafka` sẽ không resolve được DNS).
 - **.ivy2 cache**: Nằm tại `/opt/project/.ivy2/` trên PVC. Cần permissions 777 nếu spark chạy với UID khác. Xóa cache nếu cần refresh dependencies.
+- **MinIO data paths**: Raw data trên PVC nằm ở `data/nyc-raw/yellow_taxi/` và `data/nyc-lookup/`. `minio-setup` job copy từ `/data/nyc-raw/yellow_taxi/` → `s3a://nyc-raw/yellow_taxi/` và `/data/nyc-lookup/` → `s3a://nyc-lookup/`. Đảm bảo path khớp với prefix `nyc-`.
 - **Namespace stuck Terminating**: Nếu xóa namespace `nyc-taxi` và nó bị stuck: `kubectl replace --raw /api/v1/namespaces/nyc-taxi/finalize -f <(kubectl get namespace nyc-taxi -o json | python3 -c "import json,sys; ns=json.load(sys.stdin); ns['spec']['finalizers']=[]; print(json.dumps(ns))")`
