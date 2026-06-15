@@ -12,7 +12,6 @@ from pyspark.sql.functions import (
     hour,
     lit,
     month,
-    nullif,
     size,
     to_date,
     to_timestamp,
@@ -165,14 +164,6 @@ def main() -> None:
         .drop("dropoff_zone_id")
     )
 
-    # Clean N/A/Unknown/NV zone values at source
-    df = df \
-        .withColumn("pickup_borough", nullif(nullif(nullif(col("pickup_borough"), "Unknown"), "N/A"), "NV")) \
-        .withColumn("dropoff_borough", nullif(nullif(nullif(col("dropoff_borough"), "Unknown"), "N/A"), "NV")) \
-        .withColumn("pickup_zone", nullif(nullif(col("pickup_zone"), "N/A"), "NV")) \
-        .withColumn("dropoff_zone", nullif(nullif(col("dropoff_zone"), "N/A"), "NV")) \
-        .withColumn("pickup_service_zone", nullif(nullif(col("pickup_service_zone"), "N/A"), "NV")) \
-        .withColumn("dropoff_service_zone", nullif(nullif(col("dropoff_service_zone"), "N/A"), "NV"))
 
     error_array = array(
         when(col("event_id").isNull(), lit("event_id_null")),
