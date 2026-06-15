@@ -232,7 +232,11 @@ def main() -> int:
                 groupby_cols = cols[:4]  # fallback: any columns
             rl = 100 if params is _T100 else 500 if params is _T500 else 1000
             params = {"groupby": groupby_cols, "row_limit": rl,
-                      "time_range": "No filter"}
+                      "time_range": "No filter",
+                      "metrics": [{"aggregate": "COUNT",
+                                   "column": {"column_name": groupby_cols[0]},
+                                   "expressionType": "SIMPLE",
+                                   "label": "count"}]}
 
         existing = existing_by_name.get(name)
 
