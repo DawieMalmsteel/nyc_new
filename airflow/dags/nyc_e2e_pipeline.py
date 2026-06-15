@@ -216,7 +216,6 @@ with DAG(
         arguments=["/opt/project/scripts/superset_bootstrap.py"],
         env_vars=[
             k8s.V1EnvVar(name="SUPERSET_URL", value="http://svc-superset:8088"),
-            k8s.V1EnvVar(name="TRINO_URI", value="trino://analytics@svc-trino:8080/hive"),
             k8s.V1EnvVar(name="PG_ANALYTICS_URI", value="postgresql://analytics:analytics@svc-postgres-analytics:5432/nyc_analytics"),
         ],
         volumes=[project_volume],
