@@ -278,17 +278,18 @@ def main() -> int:
             cid = existing["id"]
             chart_ids[name] = cid
             # Update params + dashboard link (idempotent)
+            # Always include datasource fields — PUT replaces all fields
             dashboards = existing.get("dashboards", [])
             db_list = [d["id"] if isinstance(d, dict) else d for d in dashboards]
-            update = {}
             if dash_id not in db_list:
                 db_list.append(dash_id)
-                update["dashboards"] = db_list
-            # Always refresh params (timeseries charts need granularity_sqla)
-            update["params"] = json.dumps(params)
-            if update:
-                put(f"/chart/{cid}", update)
-                print(f"[chart] updated {name} id={cid}")
+            put(f"/chart/{cid}", {
+                "datasource_id": ds_id,
+                "datasource_type": "table",
+                "params": json.dumps(params),
+                "dashboards": db_list,
+            })
+            print(f"[chart] updated {name} id={cid}")
             continue
 
         # Create new chart with dashboard link
