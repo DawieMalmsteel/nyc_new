@@ -19,6 +19,9 @@ import os
 import argparse
 from pyspark.sql import SparkSession, functions as F, types as T
 
+_NOT_ZONE = ["Unknown", "N/A", "NV"]
+
+
 def run_batch(input_path, lookup_path, silver_path, quarantine_path):
     print(f"Starting enriched batch")
     print(f"  input:      {input_path}")
@@ -44,9 +47,12 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
     zones_raw = spark.read.option("header", "true").csv(lookup_path)
     zones = zones_raw.select(
         F.col("LocationID").cast("int").alias("location_id"),
-        F.col("Borough").alias("borough"),
-        F.col("Zone").alias("zone"),
-        F.col("service_zone").alias("service_zone"),
+        F.when(F.col("Borough").isin(*_NOT_ZONE), F.lit(None))
+         .otherwise(F.col("Borough")).alias("borough"),
+        F.when(F.col("Zone").isin(*_NOT_ZONE), F.lit(None))
+         .otherwise(F.col("Zone")).alias("zone"),
+        F.when(F.col("service_zone").isin(*_NOT_ZONE), F.lit(None))
+         .otherwise(F.col("service_zone")).alias("service_zone"),
     )
     pickup_zones = zones.select(
         F.col("location_id").alias("pickup_location_id"),
@@ -180,6 +186,7 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
 
     spark.stop()
     print("Batch complete.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

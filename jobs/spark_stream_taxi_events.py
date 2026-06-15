@@ -12,6 +12,7 @@ from pyspark.sql.functions import (
     hour,
     lit,
     month,
+    nullif,
     size,
     to_date,
     to_timestamp,
@@ -87,9 +88,9 @@ def main() -> None:
         .csv(args.lookup_path)
         .select(
             col("LocationID").cast("int").alias("location_id"),
-            col("Borough").alias("borough"),
-            col("Zone").alias("zone"),
-            col("service_zone").alias("service_zone"),
+            when(col("Borough").isin("Unknown", "N/A", "NV"), lit(None)).otherwise(col("Borough")).alias("borough"),
+            when(col("Zone").isin("N/A", "NV"), lit(None)).otherwise(col("Zone")).alias("zone"),
+            when(col("service_zone").isin("N/A", "NV"), lit(None)).otherwise(col("service_zone")).alias("service_zone"),
         )
     )
 
@@ -163,6 +164,15 @@ def main() -> None:
         )
         .drop("dropoff_zone_id")
     )
+
+    # Clean N/A/Unknown/NV zone values at source
+    df = df \
+        .withColumn("pickup_borough", nullif(nullif(nullif(col("pickup_borough"), "Unknown"), "N/A"), "NV")) \
+        .withColumn("dropoff_borough", nullif(nullif(nullif(col("dropoff_borough"), "Unknown"), "N/A"), "NV")) \
+        .withColumn("pickup_zone", nullif(nullif(col("pickup_zone"), "N/A"), "NV")) \
+        .withColumn("dropoff_zone", nullif(nullif(col("dropoff_zone"), "N/A"), "NV")) \
+        .withColumn("pickup_service_zone", nullif(nullif(col("pickup_service_zone"), "N/A"), "NV")) \
+        .withColumn("dropoff_service_zone", nullif(nullif(col("dropoff_service_zone"), "N/A"), "NV"))
 
     error_array = array(
         when(col("event_id").isNull(), lit("event_id_null")),
