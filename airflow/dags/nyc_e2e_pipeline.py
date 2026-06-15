@@ -249,4 +249,4 @@ with DAG(
     spark_batch >> trino_bootstrap
     spark_streaming >> trino_bootstrap
     
-    trino_bootstrap >> dbt_build >> gold_export >> materialize_postgres >> superset_bootstrap >> analytics_check
+    trino_bootstrap >> dbt_build >> [gold_export, materialize_postgres] >> superset_bootstrap >> analytics_check
