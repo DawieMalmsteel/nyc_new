@@ -153,4 +153,5 @@ with DAG(
         service_account_name="airflow-sa",
     )
 
-    dbt_build >> [gold_export, materialize_postgres] >> superset_bootstrap >> analytics_check
+    dbt_build >> gold_export
+    dbt_build >> materialize_postgres >> superset_bootstrap >> analytics_check
