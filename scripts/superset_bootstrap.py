@@ -228,11 +228,23 @@ def main() -> int:
         if params is _T or params is _T100 or params is _T500:
             cols = ds_columns.get(ds_key, [])
             groupby_cols = [c for c in cols if not c.startswith("pickup_date")][:4]
+            if not groupby_cols:
+                groupby_cols = cols[:4]  # fallback: any columns
             rl = 100 if params is _T100 else 500 if params is _T500 else 1000
             params = {"groupby": groupby_cols, "row_limit": rl,
                       "time_range": "No filter"}
 
         existing = existing_by_name.get(name)
+
+        # Build full params with orderby for table charts
+        if viz == "table" or viz.startswith("echarts"):
+            orderby_col = (params.get("groupby", [None])[0]
+                           if params.get("groupby") else
+                           params.get("metrics", [{}])[0].get("label", None))
+            if orderby_col:
+                params["orderby"] = [[orderby_col, False]]
+                params["order_desc"] = False
+
         if existing and existing.get("datasource_id") == ds_id:
             cid = existing["id"]
             chart_ids[name] = cid
