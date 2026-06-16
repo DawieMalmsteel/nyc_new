@@ -215,39 +215,42 @@ def main() -> int:
         chart_ids[name] = cid
         print(f"[chart] {name} ({viz}) id={cid}")
 
-    # 5. Build dashboard with single MARKDOWN element containing links to
-    # all charts. This bypasses the Superset layout engine entirely,
-    # avoiding the "findFirstParentContainer.js: t is undefined" error
-    # caused by programmatically-built position_json missing react-grid-layout
-    # fields (x/y/w/h/i/minW). Users click links to open charts in Explore.
-    rows_html = "\n".join(
-        f'<tr><td>{name}</td>'
-        f'<td><a href="/superset/explore/?slice_id={cid}">{chart_meta[name][0]}</a></td>'
-        f'<td><code>{chart_meta[name][1]}</code></td></tr>'
-        for name, cid in chart_ids.items()
-    )
-    markdown_text = (
-        '# NYC Taxi Gold Analytics\n\n'
-        f'**{len(chart_ids)} charts** — click a chart type to open in Explore.\n\n'
-        '| Chart | Type | Source table |\n'
-        '|-------|------|-------------|\n'
-        + rows_html
-    )
-    md_id = f"MARKDOWN-{int(time.time())}"
-    pos = {
-        "DASHBOARD_VERSION_KEY": "v2",
-        "ROOT_ID": {"id": "ROOT_ID", "type": "ROOT",
-                     "children": ["GRID_ID"]},
-        "GRID_ID": {"id": "GRID_ID", "type": "GRID",
-                     "children": [md_id],
-                     "parents": ["ROOT_ID"]},
-        md_id: {"id": md_id, "type": "MARKDOWN",
-                 "meta": {"code": markdown_text, "width": 12, "height": 50},
-                 "parents": ["ROOT_ID", "GRID_ID"],
-                 "children": []},
+    # 5. Build position_json with proper react-grid-layout fields
+    # Superset 4.1.2 frontend uses react-grid-layout and expects each
+    # component to have x/y/w/h grid fields plus id/type/meta/children/parents.
+    # Without these, the layout engine throws
+    # "findFirstParentContainer.js: t is undefined".
+    pos = {"DASHBOARD_VERSION_KEY": "v2"}
+    COLS = 3  # 3 charts per row (each 4 cols wide on 12-col grid)
+    W = 12 // COLS
+    H = 6
+    pos["ROOT_ID"] = {
+        "id": "ROOT_ID", "type": "ROOT",
+        "children": ["GRID_ID"],
     }
+    pos["GRID_ID"] = {
+        "id": "GRID_ID", "type": "GRID",
+        "children": [f"CHART-{i}" for i in range(len(chart_ids))],
+        "parents": ["ROOT_ID"],
+    }
+    for i, (name, cid) in enumerate(chart_ids.items()):
+        col = i % COLS
+        row = i // COLS
+        viz, ds_key = chart_meta[name]
+        pos[f"CHART-{i}"] = {
+            "id": f"CHART-{i}",
+            "type": "CHART",
+            "x": col * W, "y": row * H, "w": W, "h": H,
+            "meta": {
+                "chartId": cid, "width": W, "height": H,
+                "sliceName": name,
+                "text": "",
+            },
+            "parents": ["ROOT_ID", "GRID_ID"],
+            "children": [],
+        }
     put(f"/dashboard/{dash_id}", {"position_json": json.dumps(pos)})
-    print(f"[dashboard] layout rebuilt: 1 MARKDOWN with {len(chart_ids)} chart links")
+    print(f"[dashboard] layout rebuilt: {len(chart_ids)} chart slots with x/y/w/h")
 
     print(f"\n{'='*60}\nDone: DB={pg_id}, Datasets={len(ds_ids)}, "
           f"Charts={len(chart_ids)}, Dashboard={dash_id}\n{'='*60}")
