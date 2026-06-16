@@ -208,12 +208,13 @@ def main() -> int:
             _api("DELETE", f'/chart/{old["id"]}')
             print(f"[chart] deleted old {name}")
 
-        # Create new (no dashboard attachment — layout rebuilt separately)
+        # Create new chart linked to the dashboard
         cid = post("/chart/", {"slice_name": name, "viz_type": viz,
                   "datasource_id": ds_id, "datasource_type": "table",
+                  "dashboards": [dash_id],
                   "params": json.dumps(params)})["id"]
         chart_ids[name] = cid
-        print(f"[chart] {name} ({viz}) id={cid}")
+        print(f"[chart] {name} ({viz}) id={cid} — linked to dashboard {dash_id}")
 
     # 5. Build MARKDOWN dashboard with HTML table of chart links.
     # CHART-type components in hand-built position_json cause
