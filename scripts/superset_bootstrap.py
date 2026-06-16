@@ -234,6 +234,10 @@ def main() -> int:
         if viz == "pie" and "metrics" in params:
             params["metric"] = params.pop("metrics")[0]
 
+        # dist_bar: cap row_limit to keep bars readable
+        if viz == "dist_bar" and "row_limit" not in params:
+            params["row_limit"] = 15
+
         # Delete old
         old = existing.get(name)
         if old and old.get("datasource_id") == ds_id:
