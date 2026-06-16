@@ -139,7 +139,9 @@ with DAG(
         volume_mounts=[project_volume_mount],
         get_logs=True,
         in_cluster=True,
-        service_account_name="airflow-sa"
+        service_account_name="airflow-sa",
+        startup_timeout_seconds=600,
+        is_delete_operator_pod=False,
     )
 
     # 4. dbt Build (K8s Native Operator)
