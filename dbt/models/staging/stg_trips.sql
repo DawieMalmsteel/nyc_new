@@ -30,5 +30,6 @@ with src as (
     cast(pickup_year as integer)                        as pickup_year,
     cast(pickup_month as integer)                       as pickup_month
   from hive.nyc.trips
+  where pickup_year >= 2023  -- safety net: drop corrupted rows (2002, 2008, 2009)
 )
 select * from src
