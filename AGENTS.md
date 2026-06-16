@@ -2,342 +2,234 @@
 
 ## Project Overview
 
-NYC Taxi data pipeline — batch + streaming data engineering pipeline with two deployment modes: **Docker Compose** (local dev) and **Kubernetes (kind)** (production-like). Ingests NYC TLC trip records (Parquet), processes with Spark (enrichment + validation), stores silver/quarantine data in **MinIO S3**, exposes via Trino (Hive catalog), transforms with dbt-trino into analytics marts, and visualizes via Apache Superset. Also supports Debezium CDC from Postgres → Kafka as an alternative event source.
+NYC Taxi data pipeline — batch + streaming data engineering project. Ingests NYC TLC yellow taxi trip records (Parquet), enriches and validates them in Spark, stores silver/quarantine data in MinIO S3, exposes them through Trino (Hive catalog over S3), transforms with dbt-trino (3-layer model hierarchy: staging → marts → gold), and visualizes via Apache Superset. Also supports a parallel CDC path: Debezium reads Postgres WAL → Kafka → Spark streaming, all wired to the same MinIO + Trino + dbt + Superset downstream.
 
-On Kubernetes, **Airflow** is the primary orchestrator — pipeline runs automatically on schedule. **Skaffold dev** is the primary deployment tool for K8s mode — single command deploys everything, auto-syncs file changes, and manages port-forwards. Makefile is for local Docker Compose dev/testing only.
-
----
+On Kubernetes (kind + Skaffold + Helm) Airflow is the orchestrator with three DAGs: `nyc_e2e_pipeline` (monthly), `nyc_analytics_refresh` (weekly), `nyc_cdc_pipeline` (manual). K8s + Skaffold is the primary deployment target. Docker Compose + Makefile is the local-dev path.
 
 ## Architecture & Data Flow
 
 ```
-  Batch:                      Streaming:
-  Raw Parquet                 Kafka Producer (generator)
-      ↓                              ↓
-  Spark Batch (local[*])      Spark Streaming (Kafka)
-      ↓                              ↓
-      └──→ MinIO S3 (silver / quarantine) ←──┘
-                    ↓
-              Trino (Hive catalog + S3 connector)
-                    ↓
-              dbt-trino (15 models, 24/24 PASS)
-                    ↓
-              Apache Superset (7 datasets, dashboard)
-                    ↓
-              Airflow orchestration
+                  MinIO S3 (s3a://)
+                 ┌─────┴──────┬──────────────┐
+   raw parquet   │  silver/   │  quarantine/ │  gold/
+   (nyc-raw)     │  (trips)   │  invalid     │  (33 datasets)
+                 └─────┬──────┴──────┬───────┴──────┬────────┘
+                       │             │              │
+                       ▼             ▼              ▼
+                  Trino Hive catalog              Postgres analytics
+                  (hive.nyc, hive.mart,          (nyc_analytics.public)
+                   hive.nyc_gold)                       ▲
+                       │                              │
+                       ▼                              │
+                  dbt-trino (15 models, ──── materialize_to_postgres.py
+                  staging→marts→gold)              (gold layer copy)
+                                                       ▲
+                  export_gold_to_minio.py            │
+                  (CTAS Parquet → s3://nyc-gold/) ───┘
+                                          │
+                                          ▼
+                                    Superset
 ```
 
-**Validation rules** (in both Spark batch & streaming):
+Two ingestion paths:
+- **Batch**: `jobs/spark_local_batch.py` reads `s3a://nyc-raw/yellow_taxi/year=YYYY/month=MM/*.parquet`
+- **Streaming**: `jobs/spark_stream_taxi_events.py` reads Kafka topic `taxi.trip.events`
+
+Both enrich + validate with 10 rules, then write valid → `s3a://nyc-silver/trips` (partitioned by `pickup_year`, `pickup_month`) and invalid → `s3a://nyc-quarantine/invalid_trips`.
+
+**Validation rules** (in both Spark batch and streaming):
 - `pickup_ts`, `dropoff_ts` must not be null
-- `dropoff_ts` > `pickup_ts`
-- `trip_distance` > 0, `fare_amount` >= 0, `total_amount` >= `fare_amount`
+- `dropoff_ts > pickup_ts`
+- `trip_distance > 0`, `fare_amount >= 0`, `total_amount >= fare_amount`
 - `passenger_count` between 1–6
 - `payment_type` between 1–6
 - `pickup_location_id` / `dropoff_location_id` must exist in zone lookup
 
-Valid → `s3a://nyc-silver/trips/` (partitioned by `pickup_year`, `pickup_month`).
-Invalid → `s3a://nyc-quarantine/invalid_trips/`.
-
-**Storage:**
-- MinIO S3 (`s3a://` for Spark, `s3://` for Trino) for all pipeline data
-- Local filesystem for Hive metastore and streaming checkpoints
-
----
+**Spark zone cleaning** (at source in both jobs): `F.when(F.col("Borough").isin("Unknown","N/A","NV"), F.lit(None))` etc. This handles NYC TLC zone IDs 264 (Unknown/N/A) and 265 (N/A/Outside of NYC). Belt-and-suspenders `nullif()` in dbt stg_trips.sql.
 
 ## Key Directories
 
-|Directory|Purpose|
+| Directory | Purpose |
 |---|---|
-|`jobs/`|Spark processors: `spark_local_batch.py` (batch), `spark_stream_taxi_events.py` (Kafka streaming)|
-|`scripts/`|Utility scripts: CDC (seed/register/bridge), Trino bootstrap, Superset bootstrap, mart/analytics verification, `k8s_ui.sh` (port-forward)|
-|`airflow/dags/`|DAGs: `nyc_e2e_pipeline` (full pipeline), `nyc_cdc_pipeline` (CDC), `nyc_analytics_refresh` (dbt → Superset → analytics)|
-|`dbt/`|dbt-trino models (15 models: staging → marts → gold) + YAML + SQL tests|
-|`docker/`|Dockerfiles, entrypoint scripts (`.sh`), Trino/Superset configs|
-|`charts/`|**Helm chart** (`nyc-taxi`) — K8s manifests for all services, deployed via skaffold|
-|`k8s/`|Legacy K8s manifests (kind cluster): raw YAML, still usable for reference|
-|`sql/`|Analytics SQL questions (`analytics_questions.sql`), smoke tests|
-|`data/`|Data lake: raw/silver/quarantine/lookup/checkpoints (gitignored)|
-|`terraform/`|Terraform configs for MinIO bucket management (`aws_s3_bucket` resources)|
-|`skaffold.yaml`|**Skaffold config** — Helm deployer, build artifacts, deploy hooks, sync rules, port-forwards|
-
----
+| `jobs/` | Spark processors: `spark_local_batch.py` (batch), `spark_stream_taxi_events.py` (Kafka streaming) |
+| `scripts/` | Trino bootstrap, partition sync, gold export, Postgres materialize, Superset setup, CDC bridge, verify |
+| `dbt/` | dbt-trino project: `models/staging/`, `models/marts/`, `models/gold/`, `tests/`, `profiles.yml`, `dbt_project.yml` |
+| `airflow/dags/` | DAGs: `nyc_e2e_pipeline.py`, `nyc_analytics_refresh.py`, `nyc_cdc_pipeline.py` |
+| `charts/nyc-taxi/` | Helm chart for K8s (all service manifests) |
+| `docker/` | Dockerfiles + entrypoint scripts (`.sh` wrappers calling Python) |
+| `data/` | Data lake (gitignored): raw parquet, lookup CSV, Trino metastore DB files |
+| `docs/` | 14 Vietnamese markdown docs (architecture, deployment, Spark, dbt, Trino, Airflow, CDC, Superset, Docker, Helm/Skaffold, scripts, data flow) |
+| `k8s/` | Legacy raw K8s YAML — superseded by `charts/nyc-taxi/` |
+| `sql/` | `analytics_questions.sql` (10 verification queries), `smoke_tests.sql` |
+| `reports/` | Data quality and verification reports |
+| `terraform/` | Terraform configs for MinIO bucket management |
 
 ## Development Commands
 
-### Docker Compose (local dev)
-All operations via `make <target>`.
-
-#### Infrastructure
-```
-make infra-up            # Start core: ZK, Kafka, MinIO, Spark
-make infra-up-all        # Everything (Trino, dbt, Superset, Airflow)
-make infra-status        # docker compose ps
-make infra-logs SVC=trino
-```
-
-#### Kafka
-```
-make kafka-topics        # Create topics (taxi.trip.events, .invalid, .dlq)
-```
-
-#### CDC (Debezium)
-```
-make cdc-seed            # Seed Postgres from parquet (5000 rows)
-make cdc-register        # Register Debezium connector
-make cdc-bridge          # Bridge CDC topic → taxi.trip.events
-make cdc-verify          # Full CDC E2E
-```
-
-#### Spark
-```
-make spark-batch         # Batch backfill via MinIO S3
-MONTH=03 make spark-batch  # Specific month
-make spark-streaming     # Submit streaming job to Spark master
-```
-
-#### Trino
-```
-make trino-bootstrap     # Register tables from S3 parquet (idempotent)
-make trino-shell         # Interactive Trino shell
-```
-
-#### dbt
-```
-make dbt-build           # Full dbt build (models + tests)
-make dbt-run             # Models only
-make dbt-test            # Tests only
-```
-
-#### Superset
-```
-make superset-bootstrap  # Register DB, 7 datasets, 4 charts, dashboard
-make superset-check      # List resources
-```
-
-#### Airflow
-```
-make airflow-up          # Start Airflow (after infra-up)
-make airflow-trigger DAG=nyc_analytics_refresh
-```
-
-#### Verify & Clean
-```
-make verify-all          # Full pipeline verification
-make verify-mart         # Row counts in Trino
-make verify-analytics    # 10 SQL questions (expect PASS 10/10)
-make clean-all           # Delete generated data
-```
-
 ### Kubernetes / Skaffold (primary)
 
-**Skaffold** (`skaffold dev`) is the primary deployment tool. Single command builds images, syncs files to PVC, deploys Helm chart, and starts port-forwards. Watches for file changes and auto-syncs.
+```bash
+# Single entry point — builds images, deploys Helm, port-forwards, watches
+skaffold dev --namespace nyc-taxi
+```
+
+Skaffold pipeline: build → load images into kind → pre-deploy hooks (helm-uninstall, namespace reset, PV release, tar-sync project + data, retag images `:k8s`) → Helm install → file-sync watch → port-forwards.
+
+- `kubectl get pods -n nyc-taxi` — check pod status
+- `kubectl logs -n nyc-taxi <pod>` — tail pod logs
+- `kubectl exec -it -n nyc-taxi <pod> -- bash` — exec into pod
+- `kubectl delete namespace nyc-taxi --force --grace-period=0` — force-clean stuck namespace
+
+### Docker Compose (local dev / test)
 
 ```bash
-# Full development loop (auto-watch + sync + port-forward):
-skaffold dev --namespace nyc-taxi
-
-# One-shot deploy (no watch):
-skaffold run --namespace nyc-taxi
-
-# Build images only:
-skaffold build --namespace nyc-taxi
+make infra-up          # ZK + Kafka + MinIO + Spark
+make kafka-topics
+make spark-batch [MONTH=03]
+make trino-bootstrap
+make dbt-build
+make gold-export
+make superset-bootstrap
+make verify-all        # 7-step E2E
+make clean-all
 ```
 
-After `skaffold dev` is running:
-- Edit `airflow/dags/` → files auto-synced to PVC via file-sync pod → Airflow picks up
-- Edit `jobs/` or `scripts/` → files auto-synced to PVC
-- Edit Helm chart or Dockerfiles → skaffold auto-rebuilds + re-deploys
+### UIs / Port-forwards
 
-#### Legacy Makefile K8s targets (replaced by skaffold):
-```
-make k8s-cluster         # kind create cluster (3 nodes)
-make k8s-images          # Build + load images into kind
-make k8s-destroy         # kind delete cluster (all data gone)
-make k8s-ui              # Start port-forwards (39080-39086) — alternative to skaffold port-forwards
-make k8s-ui-stop         # Stop port-forwards
-make k8s-verify          # Row counts via Trino job
-make k8s-verify-analytics # 10 SQL questions job
-make k8s-verify-cdc      # Postgres/Debezium/Kafka check
-make k8s-clean           # Clean MinIO data + delete jobs
-make k8s-status          # kubectl get pods
-make k8s-logs JOB=name   # Tail logs for a job
-```
-
----
+K8s uses range 39080+:
+| Port | Service | URL |
+|---|---|---|
+| 39080 | Superset | `http://localhost:39080` (admin/admin) |
+| 39081 | MinIO API | `http://localhost:39081` |
+| 39082 | Kafka UI | `http://localhost:39082` |
+| 39083 | Spark Master | `http://localhost:39083` |
+| 39084 | Trino | `http://localhost:39084` |
+| 39085 | Airflow | `http://localhost:39085` (admin/admin) |
+| 39086 | MinIO Console | `http://localhost:39086` (minio/minio123) |
+| 39087 | Postgres CDC | `http://localhost:39087` |
 
 ## Code Conventions & Common Patterns
 
-### Python
-- **argparse** for CLI (no click/typer). All scripts use `parser.add_argument()` with typed defaults.
-- **Type hints** on all function signatures, return types annotated.
-- **Config/constants** at module top — named constants in `UPPER_CASE`, schema dicts as module-level variables.
-- **Docstrings** on modules and functions (triple-quoted).
-- **Error handling**: `try/except` around external calls (Kafka, REST API), `log.error` + `raise` on failure. Fail-fast in entrypoints via `set -euo pipefail` (bash).
-- **Imports**: stdlib first, then third-party, then local. No `__init__.py` re-exports.
-- **Main guard**: `if __name__ == "__main__": main()` pattern with `sys.exit(main())` for CLI return codes.
-- **Entrypoint scripts** in `docker/` — minimal bash wrappers delegating to Python; `set -euo pipefail` and `exec`.
+### Python (Spark, scripts, entrypoints)
+
+- `argparse` for CLI (no click/typer). Scripts use typed defaults.
+- Type hints on function signatures, return types annotated.
+- Module-level constants in `UPPER_CASE`, schema dicts as module-level variables.
+- `if __name__ == "__main__": main()` + `sys.exit(main())` pattern.
+- Trino client: `trino.dbapi.connect(host, port, user)` with `cur.execute` + `cur.fetchall`. `TrinoUserError` is the dominant catch target. **Paramstyle is `qmark` (use `?` not `%s`).**
+- Every bootstrap script has `wait_for_<dep>(host, port, timeout=300)` polling `SELECT 1` with 2s backoff.
+- Lazy pip install for optional deps: `minio` is installed at runtime if missing.
 
 ### Spark (PySpark)
-- `SparkSession.builder.appName(...)` with `local[*]` master for batch, `spark://spark-master:7077` for streaming.
-- **Schemas** defined as `StructType([StructField(...)])` lists, not DDL strings.
-- Transformations use `spark.sql.functions` (not raw SQL in streaming).
-- Column expressions via `col(...)`.
-- Zone lookup join: small lookup DF directly joined without explicit broadcast hint.
-- Stream processing uses `foreachBatch` + `writeStream.trigger(availableNow=True)` for batch-mode consumption.
-- Output partitioned by `pickup_year`, `pickup_month`.
-- **MinIO S3 config**: `spark.hadoop.fs.s3a.*` with env var overrides (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`). Credentials hardcoded `minio/minio123`.
-- **S3A packages**: Must use `--packages org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262` on `spark-submit` CLI. Using `spark.jars.packages` in SparkSession config fails at runtime.
-- Both batch and streaming always use `mode("append")` — never `overwrite` (to avoid data loss from `partitionOverwriteMode=dynamic`).
-- **S3 commit fix**: `spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2` required because MinIO does not support atomic rename.
-- **Ivy cache**: `spark.jars.ivy=/opt/project/.ivy2` shared on PVC to avoid re-downloading hadoop-aws deps per pod.
+
+- `SparkSession.builder` with `local[*]` master for batch, `spark://spark-master:7077` for streaming.
+- Schemas as `StructType([StructField(...)])` lists, not DDL strings.
+- Transformations via `spark.sql.functions` (not raw SQL in streaming).
+- Zone cleanup: `F.when(F.col("Borough").isin("Unknown","N/A","NV"), F.lit(None)).otherwise(...)` — NOT `nullif(nullif(...))` which is invalid PySpark.
+- Output partitioned by `pickup_year, pickup_month`.
+- `mode("append")` (never `overwrite`) to avoid data loss.
+- `spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2` for MinIO.
+- S3A packages: `org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262` on `spark-submit` CLI (not SparkSession config).
+- Ivy cache on PVC: `spark.jars.ivy=/opt/project/.ivy2`.
 
 ### dbt (SQL)
-- **Naming**: `stg_` (staging), `dim_`/`fact_` (marts), `gold_` (gold layer), `mart_` (summary).
-- **Materialization**: All models are `view`. Hive file-based HMS does not support `RENAME TABLE` (which dbt uses for table swaps). Never use `materialized='table'`.
-- **Model layers**: 4 staging (stg_trips, stg_zones, stg_invalid_trips), 7 marts (fact_trips, dim_zone, fact_invalid_trips, mart_hourly_summary, mart_revenue_by_day, mart_revenue_by_zone, mart_payment_type_summary), 4 gold.
-- **Tests**: YAML generic tests (`not_null`, `accepted_values`) per model; singular SQL tests in `dbt/tests/` (e.g., `payment_type_range.sql`).
-- **Refs**: Models reference each other via `{{ ref('model_name') }}`. No direct table references across layers.
-- **Derived fields**: `tip_rate = tip_amount / total_amount`, `trip_duration_sec` via `date_diff`.
+
+- All models `materialized=view` (Hive HMS doesn't support `RENAME TABLE`).
+- Naming: `stg_` (staging), `dim_`/`fact_`/`mart_` (marts), `gold_` (gold layer).
+- `nullif()` for cleaning N/A/Unknown/NV zone values: `nullif(nullif(col, 'N/A'), 'NV')`.
+- Models reference each other via `{{ ref('model_name') }}`.
+- dbt target: `dev` (Trino, views in `hive.mart`) or `postgres_analytics` (Postgres, gold models as tables).
 
 ### Docker Compose
-- **Profiles** for service grouping: `default` (core), `tools`, `trino`, `dbt`, `superset`, `airflow`.
-- One-shot services (`restart: "no"`) vs daemon services (`restart: unless-stopped`).
-- Tools image (`nyc-pipeline-tools:latest`) — Python 3.11, includes `kafka-python`, `psycopg2-binary`, `pyarrow`, `pandas`, `sqlalchemy-trino`, `trino`.
-- MinIO credentials hardcoded `minio/minio123` across Spark config, Trino catalog, and mc client.
 
-### Kubernetes (kind) + Skaffold (Helm)
-- **3 nodes**: 1 control-plane + 2 workers. Node affinity on `kind-worker` for PVC access (RWO).
-- **hostPath PVCs**: `raw-data-pv` → `/mnt/nyc-data`, `project-files-pv` → `/mnt/nyc-project`.
-- Custom images built via Skaffold: `nyc-pipeline-tools:k8s`, `nyc-dbt:k8s`, `nyc-airflow:k8s`.
-- **Skaffold Helm deployer**: `skaffold.yaml` defines 3 artifacts, sync rules, deploy hooks, and port-forwards.
-- **Deploy hooks** (pre-deploy): delete immutable Jobs, sync project files + raw data to kind-worker PVCs (`/mnt/nyc-project` + `/mnt/nyc-data`).
-- **Sync rules**: watch local `airflow/dags/`, `jobs/`, `scripts/`, `dbt/`, `charts/` — auto-push to PVC via `file-sync` pod.
-- **File-sync pod**: `charts/.../airflow/file-sync.yaml` — lightweight `sleep infinity` container running as root, PVC mounted at `/opt/project`, target for `skaffold sync`.
-- **Port-forwards** via skaffold `portForward` (39080-39087), or legacy `make k8s-ui` (uses `kubectl port-forward --address 0.0.0.0`).
-- Services use `ClusterIP` type. No Ingress.
-- **Lưu ý**: Sau lần helm install đầu tiên, xóa namespace `nyc-taxi` cũ nếu nó bị stuck ở `Terminating`: `kubectl delete namespace nyc-taxi --force --grace-period=0`.
+- `set -euo pipefail` and `exec` in all entrypoints.
+- Profile groups: `default` (core), `tools`, `trino`, `dbt`, `superset`, `airflow`.
+- MinIO credentials hardcoded `minio/minio123` everywhere.
 
-### Airflow (DAGs)
-- **KubernetesPodOperator** (not BashOperator) for K8s mode. Pods mount `project-files-pvc` at `/opt/project`.
-- **claim_name** (snake_case) for kubernetes client v29.0.0 volume config.
-- `IS_K8S` flag auto-detects environment via `KUBERNETES_SERVICE_HOST` env var.
-- Schedules: `nyc_e2e_pipeline` @monthly, `nyc_analytics_refresh` @weekly, `nyc_cdc_pipeline` @monthly.
-- Spark streaming task: uses `--bootstrap-server svc-kafka:9092` (⚠️ **không phải** `kafka:9092` — service name trong K8s là `svc-kafka`).
-### CDC (Debezium)
-- Postgres 16 with WAL logical replication (`wal_level=logical`).
-- Debezium Kafka Connect 2.5 — Postgres connector, `ExtractNewRecordState` SMT.
-- Bridge script (`scripts/cdc_bridge.py`) reduces JSON envelope to flat format compatible with Spark schema.
-- **Poll-based loop**: Uses `consumer.poll()` with `--idle-timeout` to exit after N idle seconds (not infinite `for msg in consumer:` iterator).
-- **Async optimization**: Default mode uses `producer.send()` + periodic flush every `--flush-interval` events. Sync mode (`--sync`) forces `producer.send().get()` per event — ~50x slower.
-- Performance: ~300-500 ev/s async vs ~9 ev/s sync.
+### Kubernetes (kind + Skaffold)
 
----
+- kind cluster: 1 control-plane + 2 workers, both workers mount host repo at `/mnt/nyc-project` and `data/` at `/mnt/nyc-data` (hostPath RWO PVCs).
+- Service naming: `svc-` prefix (e.g., `svc-trino`, `svc-postgres-analytics`).
+- Spark streaming task uses `svc-kafka:9092` (not `kafka:9092`) — K8s service DNS.
+- Airflow uses `KubernetesPodOperator` (not BashOperator). Pods mount `project-files-pvc` at `/opt/project`. SA: `airflow-sa`.
+- Skaffold image tags use git SHA (`9de6055b5b...`). DAG tasks reference `:k8s` — pre-deploy hook `ctr image tag` adds the alias.
+- Port-forwards need `--address 0.0.0.0`; use `setsid -f` for survival after `make` exit.
+- If namespace stuck in `Terminating`: `kubectl delete namespace nyc-taxi --force --grace-period=0`.
 
 ## Important Files
 
-|File|Purpose|
+| File | Purpose |
 |---|---|
-|`jobs/spark_local_batch.py`|Batch backfill — enrichment + validation, writes S3|
-|`jobs/spark_stream_taxi_events.py`|Kafka streaming consumer — same logic as batch|
-|`dbt/models/marts/fact_trips.sql`|Primary fact table with derived fields|
-|`dbt/models/staging/stg_trips.sql`|Clean column types from silver Parquet|
-|`dbt/models/gold/gold_fact_trips.sql`|Gold-level fact with trip_id, source_file|
-|`scripts/trino_register.py`|Register Hive tables pointing to S3 paths|
-|`scripts/cdc_bridge.py`|CDC topic → standard event format (poll-based async)|
-|`scripts/superset_bootstrap.py`|Idempotent Superset setup (7 datasets, charts, dashboard)|
-|`scripts/run_analytics_questions.py`|10 SQL analytics queries validated against Trino|
-|`scripts/verify_mart.py`|Row count verification of 4 mart tables|
-|`scripts/k8s_ui.sh`|Port-forward manager using `setsid -f` for survival after `make` exit|
-|`docker/tools.Dockerfile`|Base image (Python 3.11, kafka-python, trino, pandas, pyarrow). **Copies all `docker/*.sh`** + creates symlinks for all (`entrypoint-*` + `wait-kafka`)|
-|`docker/dbt.Dockerfile`|dbt-trino runner image|
-|`docker/airflow.Dockerfile`|Airflow 2.10.5 image with Docker Compose + providers|
-|`docker/entrypoint-init-postgres.sh`|Postgres init — uses **Python psycopg2** (không `psql`, không cài postgresql-client)|
-|`docker/entrypoint-topic-init.sh`|Kafka topic init — uses `wait-kafka` + **`svc-kafka:9092`**|
-|`docker/wait-kafka.sh`|TCP wait script for Kafka bootstrap readiness (up to 120s)|
-|`docker/entrypoint-cdc-*.sh`|CDC bridge/seed/register entrypoints|
-|`docker-compose.yml`|16+ services, 6 profiles, 3 named volumes|
-|`Makefile`|Single entry point (40+ targets, 9 groups) — Docker Compose mode only|
-|`skaffold.yaml`|**Skaffold v4beta3 config** — Helm deployer, 3 artifacts, deploy hooks, sync rules, port-forwards|
-|`charts/nyc-taxi/`|**Helm chart** — all K8s service manifests (airflow, spark, kafka, trino, minio, superset, debezium, etc.)|
-|`charts/nyc-taxi/templates/airflow/file-sync.yaml`|**File-sync pod** — `sleep infinity`, runs root, PVC mounted, target for hot-reload sync|
-|`charts/nyc-taxi/templates/namespace/namespace.yaml`|Namespace template with Helm labels/annotations|
-|`charts/nyc-taxi/templates/jobs/minio-setup.yaml`|**MinIO setup job** — creates buckets, uploads raw parquet + lookup từ PVC vào MinIO S3|
-|`charts/nyc-taxi/templates/jobs/topic-init.yaml`|Kafka topic init job — uses `entrypoint-topic-init` (wait-kafka + `svc-kafka:9092`)|
-|`charts/nyc-taxi/templates/jobs/postgres-init.yaml`|Postgres init job — uses `entrypoint-init-postgres` (Python psycopg2)|
-|`kind.yaml`|kind cluster config (3 nodes, port mappings)|
-|`k8s/`|Legacy K8s manifests (raw YAML, replaced by Helm chart)|
-|`airflow/dags/nyc_e2e_pipeline.py`|E2E pipeline DAG (spark → trino → dbt → superset). ⚠️ Dùng **`svc-kafka:9092`** cho spark_streaming|
-|`airflow/dags/nyc_cdc_pipeline.py`|CDC pipeline DAG: seed Postgres → register Debezium → bridge CDC events to Kafka|
-|`airflow/dags/nyc_analytics_refresh.py`|Analytics refresh DAG: dbt → Superset refresh → analytics check|
-|`check.md`|Quick reference: UI URLs, credentials, port-forwards, row counts|
-|`sql/analytics_questions.sql`|10 business SQL queries against mart tables|
-
----
+| `kind.yaml` | 3-node kind cluster spec, NodePort 38080-38088, hostPath mounts |
+| `skaffold.yaml` | 4 image artifacts, Helm deploy, pre-deploy hooks, file-sync, port-forwards |
+| `docker-compose.yml` | 16+ services, 6 profiles |
+| `Makefile` | Compose-mode entry point (9 target groups) + K8s targets |
+| `dbt/dbt_project.yml` | dbt project config (views default, gold=table in postgres_analytics) |
+| `dbt/profiles.yml` | `dev` (Trino) + `postgres_analytics` (Postgres) targets |
+| `jobs/spark_local_batch.py` | Spark batch: read raw → enrich → validate → silver/quarantine |
+| `jobs/spark_stream_taxi_events.py` | Spark Kafka consumer, same enrichment+validation |
+| `scripts/trino_register.py` | Idempotent Trino catalog bootstrap |
+| `scripts/export_gold_to_minio.py` | CTAS ~30 gold datasets to `s3a://nyc-gold/`; defines `GOLD_DATASETS` |
+| `scripts/materialize_to_postgres.py` | Copy gold tables to Postgres analytics; imports `GOLD_DATASETS` |
+| `scripts/superset_bootstrap.py` | Superset DB + datasets + charts + dashboard (rebuilds `position_json`) |
+| `airflow/dags/nyc_e2e_pipeline.py` | Monthly: spark → trino → dbt → gold+materialize → superset → analytics |
+| `airflow/dags/nyc_analytics_refresh.py` | Weekly: dbt → gold+materialize → superset → analytics |
+| `airflow/dags/nyc_cdc_pipeline.py` | Manual CDC: cdc_seed → cdc_register → cdc_bridge |
+| `plan_export_golden_dataset.md` | Aspirational ~30 gold datasets plan (only 4 implemented in dbt gold) |
+| `check.md` | Quick reference: UI URLs, credentials, current row counts, bucket sizes |
+| `AGENTS.md` | This file |
 
 ## Runtime/Tooling Preferences
 
-- **Deployment modes**: Kubernetes/kind (primary), Docker Compose (local dev).
-- **Docker** is the only runtime requirement for Docker Compose mode. Host needs only Docker + Docker Compose.
-- **kind** for local K8s. 3 nodes, hostPath PVCs, NodePort port mappings `38080-38088`.
-- **Make** as single entry point (no shell aliases, no manual docker/kubectl commands).
-- **Python 3.11** inside containers (tools image), **Spark 3.5.1** (`apache/spark:3.5.1`), **Trino 435**, **dbt-trino 1.11.x**, **Superset 4.0.0**, **Debezium 2.5**, **Airflow 2.10.5**.
-- **MinIO** as S3-compatible storage: Spark uses `s3a://`, Trino uses `s3://`.
-- **No linter/formatter** configured. Code style is conventional Python.
-- **K8s port-forwards**: `--address 0.0.0.0` flag required. Use port range `39080+` (avoid kind NodePort conflict). Use `setsid -f` for survival.
-
-### PVC Sync (tự động qua Skaffold)
-Trong K8s mode, scripts và configs chạy từ PVC (`/opt/project/` mounted từ kind-worker), không phải từ container image. Raw data được sync vào `/mnt/nyc-data` rồi `minio-setup` job upload lên MinIO S3.
-
-**Data flow**: Host `data/` → kind-worker `/mnt/nyc-data/` → `minio-setup` job → MinIO `s3a://nyc-raw/`, `s3a://nyc-lookup/`
-
-**Tự động** (không cần thao tác thủ công):
-- `skaffold dev` chạy pre-deploy hook sync code → `/mnt/nyc-project`, raw data → `/mnt/nyc-data`
-- Khi file thay đổi, `skaffold sync` push thẳng vào `file-sync` pod → PVC → Airflow nhận thay đổi
-
-**Thủ công** (khi cần sync nhanh hoặc không dùng skaffold):
-```bash
-cd /home/dwcks/vsf_gsm/nyc_new
-# Sync code
-tar cf - \
-  --exclude='dbt/logs' --exclude='dbt/target' \
-  --exclude='.git' --exclude='__pycache__' \
-  --exclude='*.pyc' --exclude='*.pyo' \
-  airflow/dags/ jobs/ scripts/ dbt/ charts/ \
-  | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
-# Sync raw data
-tar cf - data/nyc-raw/ data/nyc-lookup/ \
-  | docker exec -i kind-worker tar xf - -C /mnt/nyc-data
-```
-
----
+- **Python 3.11** inside containers (tools image)
+- **Spark 3.5.1** (`apache/spark:3.5.1`)
+- **Trino 435**
+- **dbt-trino 1.11.x**
+- **Superset 4.0.0** (custom image `nyc-superset` with `psycopg2-binary` + `trino` drivers)
+- **Debezium 2.5**
+- **Airflow 2.10.5**
+- **PostgreSQL 16** (analytics) / **PostgreSQL 16** (CDC, logical replication enabled)
+- **MinIO** S3-compatible (no specific version pinned)
+- Package manager: pip (inside containers), no virtual env on host
+- Skaffold v4beta3 with Helm deployer
+- kind (k8s in Docker) with 3 nodes
 
 ## Testing & QA
 
-### dbt Tests (`make dbt-build`)
-- 15 models, 9 data tests — **24/24 PASS** expected.
-- **Generic tests**: `not_null`, `accepted_values` in YAML test files per model.
-- **Singular tests**: Custom SQL in `dbt/tests/` (e.g., `payment_type_range.sql`).
-- Coverage: NOT NULL on key columns, payment_type accepted values (1–6), payment_type range sanity.
+### dbt Tests (`dbt build`)
 
-### Analytics Validation (`make verify-analytics`)
-- 10 SQL questions run against Trino via `scripts/run_analytics_questions.py`.
-- Each query must return ≥1 row. Expect **10/10 PASS**.
+- 15 models, 9 data tests, all `materialized=view` in dev.
+- Generic tests: `not_null` on key columns in `dbt/tests/*.yml`.
+- Singular test: `dbt/tests/payment_type_range.sql` asserts `payment_type` in 1–6.
+- **24/24 PASS** expected on `dbt build`.
+- Coverage is thin — no `unique`/`accepted_values` tests, no freshness checks, no dbt-expectations or `dbt_utils` packages.
+- Note: `fact_invalid_trips_tests.yml` references `validation_error` column that doesn't exist by that name (model uses alias `err` after unnest) — may not bind correctly.
 
-### Mart Verification (`make verify-mart`)
-- Row counts via Trino `hive.mart.*` views.
-- Expected: `dim_zone` = 261, `fact_trips` = ~8-10M, `mart_hourly` = ~11K+, `mart_revenue_by_day` = ~96.
+### Analytics Validation
 
-### Full Pipeline (Airflow DAG `nyc_e2e_pipeline`)
-8 tasks: Spark streaming + 3x Spark batch → Trino bootstrap → dbt build → Superset bootstrap → analytics check.
-Trigger via Airflow UI (http://localhost:39085) or CLI (`make airflow-trigger DAG=nyc_e2e_pipeline`).
-### Key Constraints
-- **Hive HMS**: No `RENAME TABLE`. All dbt models **must** be `materialized='view'`. `materialized='table'` fails at build time.
-- **MinIO credentials**: Hardcoded `minio/minio123` in Spark config, Trino catalog, and mc. Change everywhere if rotated.
-- **Spark UID mismatch** (Docker): Spark runs as UID 185, host as 1000. `make setup-volumes` fixes data dir permissions (777) — only relevant for local FS mode, not S3.
-- **Docker network**: Compose project `nyc_new` creates network `nyc_new_default`. Spark containers need this network to reach MinIO.
-- **S3A packages**: Must pass via `--packages` on `spark-submit`, not in SparkSession config.
-- **verify_mart.py** uses `SET SESSION query_max_run_time='120s'` to avoid timeout on large aggregate queries.
-- **Service names in K8s**: Tất cả service names đều có prefix `svc-` (e.g., `svc-kafka`, `svc-minio`, `svc-postgres-cdc`). **Không** dùng tên thiếu prefix (e.g., `kafka` sẽ không resolve được DNS).
-- **.ivy2 cache**: Nằm tại `/opt/project/.ivy2/` trên PVC. Cần permissions 777 nếu spark chạy với UID khác. Xóa cache nếu cần refresh dependencies.
-- **MinIO data paths**: Raw data trên PVC nằm ở `data/nyc-raw/yellow_taxi/` và `data/nyc-lookup/`. `minio-setup` job copy từ `/data/nyc-raw/yellow_taxi/` → `s3a://nyc-raw/yellow_taxi/` và `/data/nyc-lookup/` → `s3a://nyc-lookup/`. Đảm bảo path khớp với prefix `nyc-`.
-- **Namespace stuck Terminating**: Nếu xóa namespace `nyc-taxi` và nó bị stuck: `kubectl replace --raw /api/v1/namespaces/nyc-taxi/finalize -f <(kubectl get namespace nyc-taxi -o json | python3 -c "import json,sys; ns=json.load(sys.stdin); ns['spec']['finalizers']=[]; print(json.dumps(ns))")`
+- 10 SQL questions in `sql/analytics_questions.sql` (run by `scripts/run_analytics_questions.py` in the `analytics_check` DAG task).
+- Expected: 10/10 PASS.
+
+### Mart Verification
+
+- `scripts/verify_mart.py` — row counts for 4 mart tables.
+- Expected: `dim_zone` = 261, `fact_trips` = ~8-10M, `mart_hourly_summary` = ~11K+, `mart_revenue_by_day` = ~90.
+
+### Full Pipeline
+
+- `nyc_e2e_pipeline` DAG: 8 tasks (spark_batch, spark_streaming, trino_bootstrap, dbt_build, gold_export, materialize_postgres, superset_bootstrap, analytics_check).
+- `nyc_analytics_refresh` DAG: 5 tasks (dbt_build, gold_export, materialize_postgres, superset_bootstrap, analytics_check).
+- `nyc_cdc_pipeline` DAG: 3 tasks (cdc_seed, cdc_register, cdc_bridge).
+- Trigger via Airflow UI or `airflow dags trigger` CLI.
+
+### Skaffold Pre-deploy Hook (idempotent reinstall)
+
+The `skaffold.yaml` pre-deploy hook handles common reinstall pain:
+1. `helm uninstall nyc-taxi` (ignore-not-found)
+2. `kubectl delete ns nyc-taxi --force --grace-period=0`
+3. Force-finalize if namespace stuck Terminating (raw `/api/v1/namespaces/.../finalize`)
+4. Release all PV claimRefs pointing at `nyc-taxi`
+5. `mkdir -p /mnt/nyc-project /mnt/nyc-data` on kind-worker
+6. `ctr image tag` for `:k8s` alias on all 4 images
+7. `tar` sync project files to `/mnt/nyc-project`
+8. `tar` sync raw data to `/mnt/nyc-data`
