@@ -256,47 +256,27 @@ def main() -> int:
         chart_ids[name] = cid
         print(f"[chart] {name} ({viz}) id={cid} — linked to dashboard {dash_id}")
 
-    # 5. Card-based MARKDOWN dashboard — CHART grid crashes Superset 4.1.2.
-    # Group charts by viz type for visual hierarchy with inline CSS.
-    groups = []
-    for name, cid in chart_ids.items():
-        viz, ds_key = chart_meta[name]
-        groups.append((viz, name, cid, ds_key))
-    groups.sort(key=lambda x: {"big_number_total": "0", "echarts_timeseries_bar": "1",
-                 "echarts_timeseries_line": "1", "pie": "2",
-                 "dist_bar": "3", "table": "4"}.get(x[0], "9"))
-
-    def _card(name, cid, viz, ds_key):
-        return (
-            f'<div style="background:#fff;border:1px solid #e0e0e0;border-radius:6px;'
-            f'padding:8px 14px;margin:4px;display:inline-block;min-width:220px;font-size:13px">'
-            f'<a href="/superset/explore/?slice_id={cid}" target="_blank" '
-            f'style="color:#1a73e8;text-decoration:none;font-weight:500">{name}</a>'
-            f'<br><span style="color:#999;font-size:10px">{viz}</span> '
-            f'<span style="color:#bbb;font-size:9px">{ds_key}</span></div>')
-
-    cards_all = "".join(_card(n, cid, viz, ds) for viz, n, cid, ds in groups)
-    labels = {"big_number_total": "KPIs", "echarts_timeseries_bar": "Trends",
-              "echarts_timeseries_line": "Trends", "pie": "Breakdowns",
-              "dist_bar": "Rankings", "table": "Details"}
-    icons = {"KPIs": "📊", "Trends": "📈", "Breakdowns": "🥧",
-             "Rankings": "📉", "Details": "📋"}
-    sections_html = ""
-    seen = set()
-    for viz, _, _, _ in groups:
-        label = labels.get(viz, "Other")
-        if label not in seen:
-            seen.add(label)
-            sections_html += (f'<h3 style="color:#333;margin-top:20px;border-bottom:2px solid #1a73e8;'
-                              f'padding-bottom:4px">{icons[label]} {label}</h3>')
-
-    md_text = (
-        f'<div style="font-family:system-ui,sans-serif;max-width:1100px">'
-        f'<h1 style="border-bottom:3px solid #1a73e8;padding-bottom:6px">NYC Taxi Gold Analytics</h1>'
-        f'<p style="color:#666">{len(chart_ids)} interactive charts — click any to explore</p>'
-        f'{sections_html}'
-        f'<div style="display:flex;flex-wrap:wrap;gap:4px">{cards_all}</div>'
-        f'<hr><p style="color:#aaa;font-size:10px">NYC Taxi Pipeline — Gold Layer</p></div>'
+    # 5. Dashboard layout: MARKDOWN header only.
+    # CHART components in position_json crash Superset 4.1.2 because
+    # chartQueries[id] / sliceEntities.slices[id] are keyed by numeric
+    # slice ID but the connected Chart container uses the component
+    # layout ID (string) for lookups.  Without CHART components in the
+    # layout, hydrateDashboard auto-creates chart placeholders with
+    # correct linking — embedded chart view renders all linked charts.
+    html_header = (
+        '<div style="font-family:system-ui,sans-serif;padding:16px;max-width:1200px;margin:0 auto">'
+        '<h1 style="border-bottom:3px solid #1a73e8;padding-bottom:8px;color:#1a1a2e">'
+        'NYC Taxi Gold Analytics</h1>'
+        f'<p style="color:#666;font-size:14px">{len(chart_ids)} charts — '
+        f'powered by Postgres analytics (2.7M trips, Jan-Mar 2024). '
+        f'Charts load lazily; scroll to reveal.</p>'
+        '<p style="color:#999;font-size:12px;margin-top:4px">'
+        f'Types: echarts ({sum(1 for v,_ in chart_meta.values() if v.startswith("echarts_"))}), '
+        f'pie ({sum(1 for v,_ in chart_meta.values() if v=="pie")}), '
+        f'KPI ({sum(1 for v,_ in chart_meta.values() if v=="big_number_total")}), '
+        f'rankings ({sum(1 for v,_ in chart_meta.values() if v=="dist_bar")}), '
+        f'tables ({sum(1 for v,_ in chart_meta.values() if v=="table")})</p>'
+        '</div>'
     )
     md_id = f"MARKDOWN-{int(time.time())}"
     pos = {
@@ -307,12 +287,13 @@ def main() -> int:
                      "children": [md_id],
                      "parents": ["ROOT_ID"]},
         md_id: {"id": md_id, "type": "MARKDOWN",
-                 "meta": {"code": md_text, "width": 12, "height": 80},
+                 "meta": {"code": html_header, "width": 12, "height": 10},
                  "parents": ["ROOT_ID", "GRID_ID"],
                  "children": []},
     }
     put(f"/dashboard/{dash_id}", {"position_json": json.dumps(pos)})
-    print(f"[dashboard] layout rebuilt: 1 MARKDOWN with {len(chart_ids)} chart links")
+    print(f"[dashboard] MARKDOWN header + {len(chart_ids)} embedded chart views "
+          f"(no CHART grid — avoids ChartHolder crash)")
 
     print(f"\n{'='*60}\nDone: DB={pg_id}, Datasets={len(ds_ids)}, "
           f"Charts={len(chart_ids)}, Dashboard={dash_id}\n{'='*60}")
