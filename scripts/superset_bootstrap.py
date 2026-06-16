@@ -106,14 +106,21 @@ CHART_DEFS = [
     ("Monthly Summary", "dist_bar", "kpi_monthly_summary",
      {"metrics": [_m("total_revenue")], "groupby": ["pickup_month"]}),
 
-    # ── tables (detail/lookup only) ──
-    ("Data Quality", "table", "dq_validation_summary", _T100),
+    # ── more visuals (no tables) ──
+    ("Quality Checks", "echarts_timeseries_bar", "dq_validation_summary",
+     {"metrics": [_m("total_trips")], "granularity_sqla": "pickup_date",
+      "time_range": "No filter"}),
+    ("Zone Trip Volume", "dist_bar", "fact_trips_hourly_zone",
+     {"metrics": [_m("trip_count")], "groupby": ["pickup_zone"]}),
+    ("Zone Groups (Volume)", "dist_bar", "dim_zone_grouped",
+     {"metrics": [_m("pickup_trip_count")], "groupby": ["zone"]}),
+    ("Airport × Zone", "dist_bar", "route_airport_zone_matrix",
+     {"metrics": [_m("trips")], "groupby": ["airport_zone"]}),
+    ("Borough OD Flow", "dist_bar", "od_borough_matrix",
+     {"metrics": [_m("trip_count")], "groupby": ["pickup_borough", "dropoff_borough"]}),
+    # ── tables (single-row metadata + lookup) ──
     ("Batch Metadata", "table", "dq_batch_metadata", _T),
-    ("Hourly Zone Detail", "table", "fact_trips_hourly_zone", _T),
     ("Zone Directory", "table", "dim_zone", _T100),
-    ("Zone Groups", "table", "dim_zone_grouped", _T100),
-    ("Airport Zone Matrix", "table", "route_airport_zone_matrix", _T),
-    ("Borough OD Matrix", "table", "od_borough_matrix", _T100),
 ]
 
 
