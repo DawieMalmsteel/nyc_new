@@ -13,6 +13,11 @@ data:
     WTF_CSRF_ENABLED = False
     TALISMAN_ENABLED = False
     ENABLE_CSP = False
+
+    # Disable rate limiting — in-memory storage is not thread-safe
+    # across gunicorn workers (RuntimeError: threads can only be started
+    # once). For production multi-pod, use Redis storage instead.
+    RATELIMIT_ENABLED = False
   bootstrap_superset.sh: |
     #!/usr/bin/env bash
     # Bootstrap Superset via REST API: Trino DB + datasets + charts + dashboard.
