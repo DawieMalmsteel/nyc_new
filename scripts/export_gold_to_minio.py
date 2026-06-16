@@ -22,7 +22,7 @@ MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minio")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minio123")
 MINIO_BUCKET = "nyc-gold"
 
-TRINO_HOST = os.environ.get("TRINO_HOST", "trino-coordinator")
+TRINO_HOST = os.environ.get("TRINO_HOST", "svc-trino")
 TRINO_PORT = int(os.environ.get("TRINO_PORT", "8080"))
 SCHEMA = "hive.nyc_gold"
 GOLD_PATH = "s3://nyc-gold"
