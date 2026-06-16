@@ -214,14 +214,22 @@ def main() -> int:
         chart_ids[name] = cid
         print(f"[chart] {name} ({viz}) id={cid}")
 
-    # 5. Rebuild position_json — bare chartId only, no form_data cache
+    # 5. Rebuild position_json with proper Superset layout structure
+    # Each component needs id, type, meta, parents, children for the
+    # layout engine to render properly.
     pos = {"DASHBOARD_VERSION_KEY": "v2",
-           "ROOT": {"type": "ROOT", "children": ["GRID_ID"]},
-           "GRID_ID": {"type": "GRID", "children": []}}
+           "ROOT": {"id": "ROOT_ID", "type": "ROOT",
+                    "children": ["GRID_ID"]},
+           "GRID_ID": {"id": "GRID_ID", "type": "GRID",
+                       "children": [],
+                       "parents": ["ROOT_ID"]}}
     for i, (_, cid) in enumerate(chart_ids.items()):
         sid = f"CHART-{i}"
         pos["GRID_ID"]["children"].append(sid)
-        pos[sid] = {"type": "CHART", "meta": {"chartId": cid, "width": 4, "height": 50}}
+        pos[sid] = {"id": sid, "type": "CHART",
+                    "meta": {"chartId": cid, "width": 4, "height": 50},
+                    "parents": ["ROOT_ID", "GRID_ID"],
+                    "children": []}
     put(f"/dashboard/{dash_id}", {"position_json": json.dumps(pos)})
     print(f"[dashboard] layout rebuilt: {len(chart_ids)} charts")
 
