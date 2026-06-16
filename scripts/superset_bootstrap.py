@@ -223,7 +223,7 @@ def main() -> int:
     pos = {"DASHBOARD_VERSION_KEY": "v2"}
     COLS = 3  # 3 charts per row (each 4 cols wide on 12-col grid)
     W = 12 // COLS
-    H = 6
+    ROW_H = 6
     pos["ROOT_ID"] = {
         "id": "ROOT_ID", "type": "ROOT",
         "children": ["GRID_ID"],
@@ -240,9 +240,9 @@ def main() -> int:
         pos[f"CHART-{i}"] = {
             "id": f"CHART-{i}",
             "type": "CHART",
-            "x": col * W, "y": row * H, "w": W, "h": H,
+            "x": col * W, "y": row * ROW_H, "w": W, "h": ROW_H,
             "meta": {
-                "chartId": cid, "width": W, "height": H,
+                "chartId": cid, "width": W, "height": ROW_H,
                 "sliceName": name,
                 "text": "",
             },
