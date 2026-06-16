@@ -28,7 +28,16 @@ superset init
 
 # Start webserver in background, then register DB/charts/dashboard.
 echo "[superset] starting webserver in background"
-superset run -h 0.0.0.0 -p 8088 --with-threads --reload --debugger &
+gunicorn \
+  --bind 0.0.0.0:8088 \
+  --workers 4 \
+  --worker-class gthread \
+  --threads 4 \
+  --timeout 120 \
+  --keep-alive 5 \
+  --log-level info \
+  --access-logfile - \
+  'superset.app:create_app()' &
 SUPERSET_PID=$!
 
 # Wait for webserver ready.
