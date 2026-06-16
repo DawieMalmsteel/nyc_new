@@ -106,8 +106,19 @@ data:
     superset init
 
     # Start webserver in background, then register DB/datasets/dashboard.
-    echo "[superset] starting webserver in background"
-    superset run -h 0.0.0.0 -p 8088 --with-threads --reload --debugger &
+    # Use gunicorn (4 workers x 4 threads) instead of Flask dev server
+    # to handle parallel chart data requests without GIL serialization.
+    echo "[superset] starting gunicorn webserver in background"
+    gunicorn \
+      --bind 0.0.0.0:8088 \
+      --workers 4 \
+      --worker-class gthread \
+      --threads 4 \
+      --timeout 120 \
+      --keep-alive 5 \
+      --log-level info \
+      --access-logfile - \
+      'superset.app:create_app()' &
     SUPERSET_PID=$!
 
     # Wait for webserver ready.
