@@ -5,7 +5,18 @@ End-to-end data pipeline for NYC TLC trip records — batch and streaming. Two d
 - **Kubernetes (kind)** — primary, production-like (3-node cluster, all services in pods). Deployed via **Skaffold** (`skaffold dev`).
 - **Docker Compose** — local development (single host, lighter). Deployed via **Make** (`make infra-up`).
 
-MinIO S3 as storage layer, Spark for processing, Trino/Hive for catalog, dbt-trino for transformations, Apache Superset for dashboards. On Kubernetes, **Airflow** is the primary orchestrator running the pipeline automatically on schedule.
+Pipeline: MinIO S3 storage → Spark batch/streaming → Trino/Hive catalog → dbt-trino transforms → **Postgres analytics DB** (gold layer) → Apache Superset dashboards. On Kubernetes, **Airflow** orchestrates the pipeline automatically on schedule.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Data flow:                                               │
+│  Raw Parquet → MinIO S3 → Spark → Silver Parquet         │
+│                         → Trino Hive catalog              │
+│                           → dbt-trino (15 views)           │
+│                             → Postgres analytics (gold)   │
+│                               → Apache Superset           │
+└─────────────────────────────────────────────────────────┘
+```
 
 ## Architecture
 
@@ -15,14 +26,15 @@ All data starts from **raw Parquet** files downloaded from NYC TLC:
 2. **Spark Batch** reads from `s3a://nyc-raw`, enriches + validates, splits into **valid** (`nyc-silver/trips/`) and **invalid** (`nyc-quarantine/`)
 3. **Trino Hive catalog** registers external tables pointing at MinIO S3 paths
 4. **dbt-trino** transforms silver data into staging → marts → gold views
-5. **Superset** queries Trino for pre-built charts and dashboard
-6. **Airflow** orchestrates the whole sequence (3 DAGs)
+5. **`export_gold_to_minio.py`** runs ~30 Trino CTAS queries, materializing gold datasets to `s3://nyc-gold/` (MinIO backup)
+6. **`materialize_to_postgres.py`** runs the same gold queries, copying results to Postgres `nyc_analytics` (serving layer)
+7. **Superset** reads from Postgres only (not Trino) — all 33 datasets and 26 charts point at `public.*` tables
+8. **Airflow** orchestrates the whole sequence (3 DAGs)
 
-Streaming path: **Kafka** events → **Spark Streaming** (same enrichment logic) → append to `nyc-silver/trips/`.
-CDC path: **Postgres WAL** → **Debezium** → Kafka → **cdc-bridge** → `taxi.trip.events` → Spark Streaming.
-
-Streaming path: **Kafka** events → **Spark Streaming** (same enrichment logic) → append to `nyc-silver/trips/`.
-CDC path: **Postgres WAL** → **Debezium** → Kafka → **cdc-bridge** → `taxi.trip.events` → Spark Streaming.
+**Parallel paths:**
+- Streaming: **Kafka** events → **Spark Streaming** (same enrichment logic) → append to `nyc-silver/trips/`
+- CDC: **Postgres WAL** → **Debezium** → Kafka → **cdc-bridge** → `taxi.trip.events` → Spark Streaming
+- Gold export runs in parallel with Postgres materialize (independent destinations, same source)
 
 ```mermaid
 flowchart TD
@@ -37,6 +49,7 @@ flowchart TD
         SILVER[("nyc-silver<br/>trips/")]
         QUARANTINE[("nyc-quarantine<br/>invalid_trips/")]
         LOOKUP[("nyc-lookup<br/>taxi_zone_lookup.csv")]
+        GOLD[("nyc-gold<br/>33 datasets")]
     end
 
     subgraph PROCESS["Processing"]
@@ -45,7 +58,13 @@ flowchart TD
         BRIDGE[cdc-bridge]
     end
 
-    RP -->|make minio-setup| RAW
+    subgraph SERVE["Serving Layer"]
+        TRINO["Trino Hive Catalog<br/>query engine"]
+        DBT["dbt-trino<br/>15 views"]
+        PGDB[("Postgres analytics<br/>nyc_analytics")]
+    end
+
+    RP -->|minio-setup| RAW
     RAW --> SB
     SB --> SILVER
     SB --> QUARANTINE
@@ -53,11 +72,13 @@ flowchart TD
     SS --> SILVER
     PG -->|Debezium| BRIDGE --> K1
 
-    SILVER --> TRINO[Trino Hive Catalog]
+    SILVER --> TRINO
     LOOKUP --> TRINO
-    TRINO --> DBT[dbt-trino<br/>15 views]
-    DBT --> SUPERSET[Apache Superset]
-    AIRFLOW[Airflow] -..-> SB & TRINO & DBT & SUPERSET
+    TRINO --> DBT
+    DBT -->|export_gold_to_minio| GOLD
+    DBT -->|materialize_to_postgres| PGDB
+    AIRFLOW["Airflow (3 DAGs)"] -..-> SB & TRINO & DBT & PGDB
+    PGDB --> SUPERSET["Apache Superset<br/>(Postgres only)"]
 ```
 
 ### Deployment Modes
@@ -79,30 +100,34 @@ skaffold dev --namespace nyc-taxi
 # One-shot deploy (no watch):
 skaffold run --namespace nyc-taxi
 
-# 2. Start port-forwards (if not using skaffold dev)
-make k8s-ui
+# 2. Wait for setup jobs to complete (topic-init, postgres-init, minio-setup, dbt-init)
+kubectl wait --for=condition=complete job -n nyc-taxi --all --timeout=180s
 
-# 3. Wait for setup jobs to complete (topic-init, postgres-init, minio-setup)
-kubectl wait --for=condition=complete job -n nyc-taxi topic-init --timeout=120s
+# 3. Open UIs
+#    Airflow:   http://localhost:39085  (admin/admin)
+#    Superset:  http://localhost:39080  (admin/admin)
+#    Trino:     http://localhost:39084
+#    MinIO:     http://localhost:39086  (minio/minio123)
 
-# 4. Trigger the pipeline via Airflow UI or CLI
-#    Airflow UI: http://localhost:39085 (admin/admin) — DAG: nyc_e2e_pipeline
-#    CLI: kubectl exec -n nyc-taxi deploy/airflow-scheduler -- airflow dags trigger nyc_e2e_pipeline
+# 4. Trigger pipelines (Airflow also runs them on schedule)
+#    Pipeline automatically runs catchup on first deploy (2024-01, 2024-02, 2024-03)
 
-# 5. Trigger CDC pipeline
-exec -n nyc-taxi deploy/airflow-scheduler -- airflow dags trigger nyc_cdc_pipeline
-
-# 6. Verify analytics (10 SQL queries against Trino)
+# 5. Verify analytics (10 SQL questions against Trino)
 make k8s-verify-analytics
 
-# 7. Stop (scale down, keep data) — if using skaffold dev, Ctrl+C
+# 6. Stop (scale down, keep data) — if using skaffold dev, Ctrl+C
 make k8s-stop
 
-# 8. Destroy (delete cluster, all data gone)
+# 7. Destroy (delete cluster, all data gone)
 make k8s-destroy
 ```
 
-After `skaffold dev` starts, Airflow runs the pipeline automatically on schedule (@monthly for e2e, @weekly for analytics). File changes to `airflow/dags/`, `jobs/`, `scripts/`, `dbt/` are auto-synced to PVC via `file-sync` pod.
+After `skaffold dev` starts, Airflow runs the pipeline on schedule:
+- `nyc_e2e_pipeline` (@monthly) — spark + trino + dbt + gold_export + materialize + superset + analytics
+- `nyc_analytics_refresh` (@weekly) — dbt + gold_export + materialize + superset + analytics
+- `nyc_cdc_pipeline` (manual) — Postgres seed + Debezium + bridge to Kafka
+
+File changes to `airflow/dags/`, `jobs/`, `scripts/`, `dbt/` are auto-synced to PVC via `file-sync` pod.
 
 ## Quick Start — Docker Compose
 
@@ -125,16 +150,39 @@ make trino-bootstrap
 # 6. Build dbt models + run tests
 make dbt-build     # 15 models + 9 tests, expect 24/24 PASS
 
-# 7. Verify data
+# 7. Export gold layer to MinIO + materialize to Postgres
+make gold-export              # CTAS to s3://nyc-gold/
+make materialize-postgres     # copies gold tables to Postgres nyc_analytics
+
+# 8. Bootstrap Superset from Postgres
+make superset-bootstrap   # http://localhost:8088 (admin/admin)
+
+# 9. Verify data
 make verify-mart       # Row counts in Trino
 make verify-analytics  # 10 SQL questions, expect PASS 10/10
-
-# 8. Start visualization
-make superset-bootstrap  # http://localhost:8088 (admin/admin)
 
 # Full pipeline in one command
 make verify-all
 ```
+
+## Pipeline Architecture
+
+```
+dbt_build (Trino views)
+   ├── gold_export ────► MinIO s3://nyc-gold/ (33 datasets, Parquet backup)
+   └── materialize_postgres ──► Postgres nyc_analytics.public ──► Superset
+        ↓
+        └── superset_bootstrap ──► Airflow webserver / Superset UI
+              └── analytics_check ──► 10 SQL questions
+
+NYE: gold_export is independent (best-effort), materialize is critical path
+```
+
+**Why both gold_export and materialize_postgres:**
+- `gold_export` writes Parquet to MinIO as a portable backup (DuckDB, Python, external tools)
+- `materialize_postgres` writes to Postgres for fast indexed queries (Superset, team SQL)
+- Both run the same SQL queries from the `GOLD_DATASETS` definition in `export_gold_to_minio.py`
+- If gold_export fails, Postgres still has the data. If materialize fails, superset bootstrap is skipped (correct).
 
 ## All Makefile Targets
 
@@ -145,7 +193,6 @@ make verify-all
 | `skaffold run --namespace nyc-taxi` | One-shot deploy (no watch) |
 | `skaffold build --namespace nyc-taxi` | Build images only |
 | `make k8s-cluster` | Create kind cluster (3 nodes) |
-| `make k8s-images` | Build & load custom images into kind (legacy) |
 | `make k8s-ui` | Start port-forwards for all UIs (39080-39086) |
 | `make k8s-ui-stop` | Stop all port-forwards |
 | `make k8s-destroy` | Delete cluster (services + volumes + images) |
@@ -177,6 +224,8 @@ make verify-all
 | `dbt-build` | Full dbt build: models + tests |
 | `dbt-run` | Run models only |
 | `dbt-test` | Run tests only |
+| `gold-export` | Export gold layer to MinIO Parquet (via Trino CTAS) |
+| `materialize-postgres` | Copy gold tables to Postgres analytics DB |
 | `superset-bootstrap` | Register DB, charts, dashboard |
 | `superset-check` | List Superset resources |
 | `airflow-up` | Start Airflow |
@@ -202,50 +251,42 @@ Kubernetes mode uses `skaffold portForward` or `kubectl port-forward` — ports 
 | Trino | http://localhost:39084 | 39084 | — |
 | Airflow | http://localhost:39085 | 39085 | `admin` / `admin` |
 | MinIO Console | http://localhost:39086 | 39086 | `minio` / `minio123` |
-| Postgres CDC | localhost:39087 | 39087 | `postgres` / `postgres` |
+| Postgres Analytics | (internal — `svc-postgres-analytics:5432`) | — | `analytics` / `analytics` |
+| Postgres CDC | (internal — `svc-postgres-cdc:5432`) | — | `postgres` / `postgres` |
 
 Docker Compose mode uses published ports directly (8088, 9000/9001, 8083, etc.).
 
 Port-forwards are managed automatically by `skaffold dev`. If not using skaffold, start via `make k8s-ui`.
-
-## Batch Results
-
-| Metric | Compose | K8s |
-|--------|---------|-----|
-| Valid trips | 8,480,408 | **10,188,983** |
-| Invalid trips | 1,074,370 | **1,074,370** |
-| Zone lookup | 265 | 265 |
-| dbt tests | 24/24 PASS | 24/24 PASS |
-| Analytics | 10/10 PASS | 10/10 PASS |
-| CDC bridge | ~2,543 ev/s | ~445 ev/s |
-| Spark runtime (3 months) | ~10 min | ~9 min |
-
-K8s numbers higher because the latest clean run includes 2002-2024 data
-(more years than the initial 2024-only Docker Compose run).
 
 ## Data Layout
 
 ```
 MinIO S3 buckets:
 ├── nyc-raw/          → yellow_taxi/year=2024/month=01..03/*.parquet
-├── nyc-silver/trips/ → pickup_year=*/pickup_month=*/  (10.2M rows)
-├── nyc-quarantine/   → invalid_trips/                  (1.07M rows)
+├── nyc-silver/trips/ → pickup_year=*/pickup_month=*/  (~10.2M rows)
+├── nyc-quarantine/   → invalid_trips/                  (~1.07M rows)
 ├── nyc-lookup/       → taxi_zone_lookup.csv            (265 zones)
+└── nyc-gold/         → 33 datasets (CTAS from Trino, Parquet, ~500MB)
+
+Postgres analytics DB (svc-postgres-analytics:5432 / nyc_analytics):
+└── public.*          → 33 tables mirroring nyc-gold (serving layer for Superset)
 ```
 
 ## Pipeline Components
 
 | Layer | Technology | Role |
 |-------|-----------|------|
-| Storage | MinIO S3 | Buckets: `nyc-raw`, `nyc-silver`, `nyc-quarantine`, `nyc-lookup` |
+| Storage | MinIO S3 | Buckets: `nyc-raw`, `nyc-silver`, `nyc-quarantine`, `nyc-lookup`, `nyc-gold` |
 | Processing | Spark 3.5.1 | Batch backfill (`spark_local_batch.py`) + Kafka streaming (`spark_stream_taxi_events.py`) |
 | Messaging | Kafka + ZK | `taxi.trip.events` (main), Debezium CDC topics |
-| Catalog | Trino 435 | Hive connector + S3 connector, reads parquet from MinIO |
+| Catalog / Query engine | Trino 435 | Hive connector + S3 connector, reads parquet from MinIO |
 | Transformation | dbt-trino | 15 views (staging → marts → gold), 9 tests |
-| Visualization | Apache Superset 4.0.0 | Trino-backed dashboard with charts |
-| Orchestration | Airflow 2.10.5 | **3 DAGs**: `nyc_e2e_pipeline` (@monthly), `nyc_cdc_pipeline` (@monthly), `nyc_analytics_refresh` (@weekly) |
+| Gold export | Trino CTAS → `s3a://nyc-gold/` | Parquet backup of gold layer (~33 datasets) |
+| Serving layer | **Postgres 16** (`nyc_analytics`) | 33 tables for Superset + team SQL queries |
+| Visualization | Apache Superset 4.0.0 | **Postgres-only** — 33 datasets, 26 charts, 1 dashboard |
+| Orchestration | Airflow 2.10.5 | **3 DAGs**: `nyc_e2e_pipeline` (@monthly), `nyc_cdc_pipeline` (manual), `nyc_analytics_refresh` (@weekly) |
 | CDC | Debezium 2.5 + Postgres 16 | WAL-based CDC, bridge to standard event format |
-| Deployment | **Skaffold v2.21.0** + Helm | `skaffold dev` — build, deploy, sync, port-forward, watch |
+| Deployment | **Skaffold v4** + Helm | `skaffold dev` — build, deploy, sync, port-forward, watch |
 
 ## CDC Pipeline
 
@@ -263,6 +304,7 @@ CDC bridge runs as a poll-based loop with idle timeout (5s) — exits automatica
 - **No host Python required** — all code runs in Docker/K8s containers.
 - **Kubernetes (Skaffold)**: `skaffold dev --namespace nyc-taxi` — tự động build, deploy, sync files, port-forward.
   Khi code thay đổi, `skaffold sync` push thẳng vào `file-sync` pod → PVC → Airflow nhận thay đổi ngay.
+- **Skaffold pre-deploy hook** is idempotent — handles clean uninstall, namespace reset, PV claim release, image `:k8s` alias tagging, and tar-sync of project files + raw data to kind-worker hostPath PVCs.
 - **PVC Sync manual** (khi không dùng skaffold):
   ```bash
   cd /home/dwcks/vsf_gsm/nyc_new
@@ -276,15 +318,18 @@ CDC bridge runs as a poll-based loop with idle timeout (5s) — exits automatica
 - **S3 commit fix**: `spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2`
   required because MinIO does not support atomic S3 rename.
 - **MinIO credentials**: `minio` / `minio123`. Spark uses `s3a://`, Trino uses `s3://`.
-- **All dbt models** are `materialized='view'` — Hive file-based HMS does not support `RENAME TABLE`.
+- **Postgres analytics credentials**: `analytics` / `analytics`, DB `nyc_analytics`, schema `public`. Trino is still the query engine for silver data; Postgres is only for the gold serving layer.
+- **All dbt models** are `materialized='view'` (Trino target) or `materialized='table'` (postgres_analytics target for gold). Hive file-based HMS does not support `RENAME TABLE`.
+- **Spark zone cleaning** at source: `F.when(F.col("Borough").isin("Unknown","N/A","NV"), F.lit(None))` handles NYC TLC zone IDs 264 (Unknown/N/A) and 265 (N/A/Outside of NYC). Belt-and-suspenders `nullif()` in dbt stg_trips.
+- **Superset**: connects to Postgres only. All 33 datasets in `public.*` schema, 26 charts (echarts/pie/table), dashboard "NYC Taxi Gold Analytics". Position_json is rebuilt clean on every bootstrap to avoid stale form_data cache.
 - **Port-forward survival**: `scripts/k8s_ui.sh` uses `setsid -f` so processes survive `make` exit.
   Skaffold automatically manages port-forwards in `dev` mode.
 - **Kafka bootstrap**: Docker Compose `localhost:29092`, container `nyc_kafka:9092`, **K8s `svc-kafka:9092`**
   (⚠️ không dùng `kafka:9092` — service name trong K8s namespace `nyc-taxi` có prefix `svc-`).
 - **Airflow DAG management**: 3 DAGs tự động chạy trên lịch:
-  - `nyc_e2e_pipeline` (@monthly): Spark batch + streaming → Trino → dbt → Superset
-  - `nyc_cdc_pipeline` (@monthly): Seed Postgres → Debezium → bridge CDC → Kafka
-  - `nyc_analytics_refresh` (@weekly): dbt → Superset refresh → analytics check
+  - `nyc_e2e_pipeline` (@monthly): Spark batch + streaming → trino_bootstrap → dbt_build → [gold_export ∥ materialize_postgres] → superset_bootstrap → analytics_check
+  - `nyc_analytics_refresh` (@weekly): dbt_build → [gold_export ∥ materialize_postgres] → superset_bootstrap → analytics_check
+  - `nyc_cdc_pipeline` (manual): cdc_seed → cdc_register → cdc_bridge
   
   Trigger manual: Airflow UI (http://localhost:39085) hoặc:
   ```bash
@@ -295,3 +340,5 @@ CDC bridge runs as a poll-based loop with idle timeout (5s) — exits automatica
 - **Postgres init**: Dùng Python `psycopg2` (không cần `psql` / postgresql-client).
 - **topic-init**: Dùng `wait-kafka` (TCP wait script, có sẵn trong tools image) + `svc-kafka:9092`.
 - **Helm chart**: Tất cả manifests đều trong `charts/nyc-taxi/templates/`. Deploy via `deploy.helm` trong skaffold.yaml.
+- **Trino params**: must use `?` placeholder (paramstyle='qmark'), NOT `%s`. Catalog must be set via `trino_connect(catalog="hive")` or query prefix.
+- **Trino metastore**: stored at `/opt/project/data/trino-metastore` on `raw-data-pvc` so tables survive pod restarts.

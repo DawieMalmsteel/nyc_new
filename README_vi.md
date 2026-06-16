@@ -5,7 +5,18 @@ Pipeline xử lý dữ liệu chuyến đi taxi NYC từ đầu đến cuối �
 - **Kubernetes (kind)** — chính, giống production (3 nodes, tất cả dịch vụ trong pod). Triển khai qua **Skaffold** (`skaffold dev`).
 - **Docker Compose** — phát triển local (một máy, nhẹ hơn). Triển khai qua **Make** (`make infra-up`).
 
-MinIO S3 là tầng lưu trữ, Spark xử lý dữ liệu, Trino/Hive làm catalog, dbt-trino biến đổi dữ liệu, Apache Superset hiển thị dashboard. Trên Kubernetes, **Airflow** là công cụ điều phối chính — pipeline tự động chạy theo lịch.
+Pipeline: MinIO S3 storage → Spark batch/streaming → Trino/Hive catalog → dbt-trino transforms → **Postgres analytics DB** (gold layer) → Apache Superset. Trên Kubernetes, **Airflow** điều phối pipeline tự động theo lịch.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Data flow:                                               │
+│  Raw Parquet → MinIO S3 → Spark → Silver Parquet         │
+│                         → Trino Hive catalog              │
+│                           → dbt-trino (15 views)           │
+│                             → Postgres analytics (gold)   │
+│                               → Apache Superset           │
+└─────────────────────────────────────────────────────────┘
+```
 
 ## Kiến trúc
 
@@ -15,11 +26,15 @@ Mọi thứ đều bắt đầu từ **file Parquet thô** tải từ NYC TLC:
 2. **Spark Batch** đọc từ `s3a://nyc-raw`, enrich + validate, chia thành **hợp lệ** (`nyc-silver/trips/`) và **không hợp lệ** (`nyc-quarantine/`)
 3. **Trino Hive catalog** register bảng external trỏ đến đường dẫn MinIO S3
 4. **dbt-trino** biến đổi dữ liệu silver thành staging → marts → gold views
-5. **Superset** truy vấn Trino để hiển thị biểu đồ và dashboard
-6. **Airflow** điều phối toàn bộ luồng (3 DAGs)
+5. **`export_gold_to_minio.py`** chạy ~30 Trino CTAS queries, materialize gold datasets vào `s3://nyc-gold/` (backup Parquet)
+6. **`materialize_to_postgres.py`** chạy cùng queries, copy kết quả vào Postgres `nyc_analytics` (serving layer)
+7. **Superset** đọc từ Postgres (không phải Trino) — 33 datasets và 26 charts trỏ vào `public.*`
+8. **Airflow** điều phối toàn bộ luồng (3 DAGs)
 
-Luồng streaming: **Kafka** events → **Spark Streaming** (cùng logic enrich) → append vào `nyc-silver/trips/`.
-Luồng CDC: **Postgres WAL** → **Debezium** → Kafka → **cdc-bridge** → `taxi.trip.events` → Spark Streaming.
+**Các luồng song song:**
+- Streaming: **Kafka** events → **Spark Streaming** (cùng logic enrich) → append vào `nyc-silver/trips/`
+- CDC: **Postgres WAL** → **Debezium** → Kafka → **cdc-bridge** → `taxi.trip.events` → Spark Streaming
+- Gold export chạy song song với Postgres materialize (khác đích, cùng nguồn)
 
 ```mermaid
 flowchart TD
@@ -34,6 +49,7 @@ flowchart TD
         SILVER[("nyc-silver<br/>trips/")]
         QUARANTINE[("nyc-quarantine<br/>invalid_trips/")]
         LOOKUP[("nyc-lookup<br/>taxi_zone_lookup.csv")]
+        GOLD[("nyc-gold<br/>33 datasets")]
     end
 
     subgraph PROCESS["Xử lý"]
@@ -42,7 +58,13 @@ flowchart TD
         BRIDGE[cdc-bridge]
     end
 
-    RP -->|make minio-setup| RAW
+    subgraph SERVE["Serving Layer"]
+        TRINO["Trino Hive Catalog<br/>query engine"]
+        DBT["dbt-trino<br/>15 views"]
+        PGDB[("Postgres analytics<br/>nyc_analytics")]
+    end
+
+    RP -->|minio-setup| RAW
     RAW --> SB
     SB --> SILVER
     SB --> QUARANTINE
@@ -50,11 +72,13 @@ flowchart TD
     SS --> SILVER
     PG -->|Debezium| BRIDGE --> K1
 
-    SILVER --> TRINO[Trino Hive Catalog]
+    SILVER --> TRINO
     LOOKUP --> TRINO
-    TRINO --> DBT[dbt-trino<br/>15 views]
-    DBT --> SUPERSET[Apache Superset]
-    AIRFLOW[Airflow] -..-> SB & TRINO & DBT & SUPERSET
+    TRINO --> DBT
+    DBT -->|export_gold_to_minio| GOLD
+    DBT -->|materialize_to_postgres| PGDB
+    AIRFLOW["Airflow (3 DAGs)"] -..-> SB & TRINO & DBT & PGDB
+    PGDB --> SUPERSET["Apache Superset<br/>(chỉ Postgres)"]
 ```
 
 ### Chế độ triển khai
@@ -76,30 +100,36 @@ skaffold dev --namespace nyc-taxi
 # Hoặc deploy một lần (không watch):
 skaffold run --namespace nyc-taxi
 
-# 2. Bật port-forwards (nếu không dùng skaffold dev)
-make k8s-ui
+# 2. Đợi setup jobs hoàn thành (topic-init, postgres-init, minio-setup, dbt-init)
+kubectl wait --for=condition=complete job -n nyc-taxi --all --timeout=180s
 
-# 3. Đợi setup jobs hoàn thành (topic-init, postgres-init, minio-setup)
-kubectl wait --for=condition=complete job -n nyc-taxi topic-init --timeout=120s
+# 3. Mở UIs
+#    Airflow:   http://localhost:39085  (admin/admin)
+#    Superset:  http://localhost:39080  (admin/admin)
+#    Trino:     http://localhost:39084
+#    MinIO:     http://localhost:39086  (minio/minio123)
 
-# 4. Kích hoạt DAG qua Airflow UI hoặc CLI:
-#    UI: http://localhost:39085 -> admin/admin -> unpause + trigger nyc_e2e_pipeline
-#    CLI: kubectl exec -n nyc-taxi deploy/airflow-scheduler -- airflow dags trigger nyc_e2e_pipeline
+# 4. Pipeline tự động chạy theo lịch
+#    nyc_e2e_pipeline (@monthly) — spark + trino + dbt + gold + materialize + superset
+#    nyc_analytics_refresh (@weekly) — dbt + gold + materialize + superset
+#    Catchup tự động chạy 2024-01, 2024-02, 2024-03 ở lần deploy đầu
 
-# 5. Kích hoạt CDC pipeline
-kubectl exec -n nyc-taxi deploy/airflow-scheduler -- airflow dags trigger nyc_cdc_pipeline
-
-# 6. Kiểm tra analytics (10 câu SQL truy vấn Trino)
+# 5. Kiểm tra analytics (10 câu SQL truy vấn Trino)
 make k8s-verify-analytics
 
-# 7. Dừng (scale down, giữ dữ liệu) — nếu dùng skaffold dev thì Ctrl+C
+# 6. Dừng (scale down, giữ dữ liệu) — nếu dùng skaffold dev thì Ctrl+C
 make k8s-stop
 
-# 8. Xoá (xoá cluster, mất hết dữ liệu)
+# 7. Xoá (xoá cluster, mất hết dữ liệu)
 make k8s-destroy
 ```
 
-Sau khi `skaffold dev` chạy, Airflow tự động chạy pipeline theo lịch (@monthly cho e2e, @weekly cho analytics). File changes trong `airflow/dags/`, `jobs/`, `scripts/`, `dbt/` được tự động đồng bộ vào PVC qua `file-sync` pod.
+Sau khi `skaffold dev` chạy, Airflow tự động chạy pipeline theo lịch:
+- `nyc_e2e_pipeline` (@monthly) — spark + trino + dbt + gold_export + materialize + superset + analytics
+- `nyc_analytics_refresh` (@weekly) — dbt + gold_export + materialize + superset + analytics
+- `nyc_cdc_pipeline` (manual) — Postgres seed + Debezium + bridge to Kafka
+
+File changes trong `airflow/dags/`, `jobs/`, `scripts/`, `dbt/` được tự động đồng bộ vào PVC qua `file-sync` pod.
 
 ## Bắt đầu nhanh — Docker Compose
 
@@ -122,16 +152,39 @@ make trino-bootstrap
 # 6. Build dbt models + chạy test
 make dbt-build     # 15 models + 9 tests, kỳ vọng 24/24 PASS
 
-# 7. Kiểm tra dữ liệu
+# 7. Export gold layer + materialize to Postgres
+make gold-export              # CTAS to s3://nyc-gold/
+make materialize-postgres     # copy gold tables to Postgres nyc_analytics
+
+# 8. Bootstrap Superset từ Postgres
+make superset-bootstrap   # http://localhost:8088 (admin/admin)
+
+# 9. Kiểm tra dữ liệu
 make verify-mart       # Đếm dòng trong Trino
 make verify-analytics  # 10 câu SQL, kỳ vọng PASS 10/10
-
-# 8. Khởi động dashboard
-make superset-bootstrap  # http://localhost:8088 (admin/admin)
 
 # Toàn bộ pipeline trong một lệnh
 make verify-all
 ```
+
+## Kiến trúc Pipeline
+
+```
+dbt_build (Trino views)
+   ├── gold_export ────► MinIO s3://nyc-gold/ (33 datasets, Parquet backup)
+   └── materialize_postgres ──► Postgres nyc_analytics.public ──► Superset
+        ↓
+        └── superset_bootstrap ──► Airflow webserver / Superset UI
+              └── analytics_check ──► 10 câu SQL
+
+LƯU Ý: gold_export chạy độc lập (best-effort), materialize là critical path
+```
+
+**Tại sao cần cả gold_export và materialize_postgres:**
+- `gold_export` ghi Parquet vào MinIO như backup portable (DuckDB, Python, công cụ ngoài)
+- `materialize_postgres` ghi vào Postgres để query nhanh có index (Superset, team SQL)
+- Cả hai chạy cùng SQL queries từ `GOLD_DATASETS` trong `export_gold_to_minio.py`
+- Nếu gold_export fail, Postgres vẫn có data. Nếu materialize fail, superset bootstrap bị bỏ qua (đúng).
 
 ## Tất cả Makefile Targets
 
@@ -173,6 +226,8 @@ make verify-all
 | `dbt-build` | Full dbt build: models + tests |
 | `dbt-run` | Chạy models chỉ |
 | `dbt-test` | Chạy tests chỉ |
+| `gold-export` | Export gold layer sang MinIO Parquet (qua Trino CTAS) |
+| `materialize-postgres` | Copy gold tables sang Postgres analytics DB |
 | `superset-bootstrap` | Register DB, charts, dashboard |
 | `superset-check` | Liệt kê tài nguyên Superset |
 | `airflow-up` | Khởi động Airflow |
@@ -198,50 +253,42 @@ Chế độ Kubernetes dùng `skaffold portForward` hoặc `kubectl port-forward
 | Trino | http://localhost:39084 | 39084 | — |
 | Airflow | http://localhost:39085 | 39085 | `admin` / `admin` |
 | MinIO Console | http://localhost:39086 | 39086 | `minio` / `minio123` |
-| Postgres CDC | localhost:39087 | 39087 | `postgres` / `postgres` |
+| Postgres Analytics | (internal — `svc-postgres-analytics:5432`) | — | `analytics` / `analytics` |
+| Postgres CDC | (internal — `svc-postgres-cdc:5432`) | — | `postgres` / `postgres` |
 
 Chế độ Docker Compose dùng cổng publish trực tiếp (8088, 9000/9001, 8083, v.v.).
 
 Port-forwards được `skaffold dev` tự động quản lý. Nếu không dùng skaffold, chạy `make k8s-ui`.
-
-## Kết quả Batch
-
-| Chỉ số | Compose | K8s |
-|--------|---------|-----|
-| Chuyến hợp lệ | 8.480.408 | **10.188.983** |
-| Chuyến lỗi | 1.074.370 | **1.074.370** |
-| Zone lookup | 265 | 265 |
-| dbt tests | 24/24 PASS | 24/24 PASS |
-| Analytics | 10/10 PASS | 10/10 PASS |
-| CDC bridge | ~2.543 ev/s | ~445 ev/s |
-| Spark runtime (3 tháng) | ~10 phút | ~9 phút |
-
-K8s có số liệu cao hơn vì lần chạy sạch gần nhất bao gồm dữ liệu 2002-2024
-(nhiều năm hơn lần chạy Docker Compose ban đầu chỉ có 2024).
 
 ## Cấu trúc dữ liệu
 
 ```
 MinIO S3 buckets:
 ├── nyc-raw/          → yellow_taxi/year=2024/month=01..03/*.parquet
-├── nyc-silver/trips/ → pickup_year=*/pickup_month=*/  (10.2M dòng)
-├── nyc-quarantine/   → invalid_trips/                  (1.07M dòng)
+├── nyc-silver/trips/ → pickup_year=*/pickup_month=*/  (~10.2M dòng)
+├── nyc-quarantine/   → invalid_trips/                  (~1.07M dòng)
 ├── nyc-lookup/       → taxi_zone_lookup.csv            (265 zones)
+└── nyc-gold/         → 33 datasets (CTAS từ Trino, Parquet, ~500MB)
+
+Postgres analytics DB (svc-postgres-analytics:5432 / nyc_analytics):
+└── public.*          → 33 bảng mirror nyc-gold (serving layer cho Superset)
 ```
 
 ## Thành phần Pipeline
 
 | Tầng | Công nghệ | Vai trò |
 |------|-----------|---------|
-| Lưu trữ | MinIO S3 | Buckets: `nyc-raw`, `nyc-silver`, `nyc-quarantine`, `nyc-lookup` |
+| Lưu trữ | MinIO S3 | Buckets: `nyc-raw`, `nyc-silver`, `nyc-quarantine`, `nyc-lookup`, `nyc-gold` |
 | Xử lý | Spark 3.5.1 | Batch backfill (`spark_local_batch.py`) + Kafka streaming (`spark_stream_taxi_events.py`) |
 | Nhắn tin | Kafka + ZK | `taxi.trip.events` (chính), Debezium CDC topics |
-| Catalog | Trino 435 | Hive connector + S3 connector, đọc parquet từ MinIO |
+| Catalog / Query engine | Trino 435 | Hive connector + S3 connector, đọc parquet từ MinIO |
 | Biến đổi | dbt-trino | 15 views (staging → marts → gold), 9 tests |
-| Hiển thị | Apache Superset 4.0.0 | Dashboard kết nối Trino với biểu đồ |
-| Điều phối | Airflow 2.10.5 (chính trên K8s) | **3 DAGs**: `nyc_e2e_pipeline` (@monthly), `nyc_cdc_pipeline` (@monthly), `nyc_analytics_refresh` (@weekly) |
-| Triển khai | **Skaffold v2.21.0** + Helm | `skaffold dev` — build, deploy, sync, port-forward, watch |
+| Gold export | Trino CTAS → `s3a://nyc-gold/` | Parquet backup của gold layer (~33 datasets) |
+| Serving layer | **Postgres 16** (`nyc_analytics`) | 33 bảng cho Superset + team SQL |
+| Hiển thị | Apache Superset 4.0.0 | **Chỉ Postgres** — 33 datasets, 26 charts, 1 dashboard |
+| Điều phối | Airflow 2.10.5 (chính trên K8s) | **3 DAGs**: `nyc_e2e_pipeline` (@monthly), `nyc_cdc_pipeline` (manual), `nyc_analytics_refresh` (@weekly) |
 | CDC | Debezium 2.5 + Postgres 16 | CDC qua WAL, bridge sang format chuẩn |
+| Triển khai | **Skaffold v4** + Helm | `skaffold dev` — build, deploy, sync, port-forward, watch |
 
 ## CDC Pipeline
 
@@ -259,15 +306,7 @@ CDC bridge chạy vòng lặp poll với idle timeout (5s) — tự động tho�
 - **Không cần Python trên host** — tất cả code chạy trong container Docker/K8s.
 - **Kubernetes (Skaffold)**: `skaffold dev --namespace nyc-taxi` — tự động build, deploy, sync files, port-forward.
   Khi code thay đổi, `skaffold sync` push thẳng vào `file-sync` pod → PVC → Airflow nhận thay đổi ngay.
-- **Airflow DAG management**: 3 DAGs tự động chạy trên lịch:
-  - `nyc_e2e_pipeline` (@monthly): Spark batch + streaming → Trino → dbt → Superset
-  - `nyc_cdc_pipeline` (@monthly): Seed Postgres → Debezium → bridge CDC → Kafka
-  - `nyc_analytics_refresh` (@weekly): dbt → Superset refresh → analytics check
-  
-  Kích hoạt thủ công: Airflow UI (http://localhost:39085) hoặc:
-  ```bash
-  kubectl exec -n nyc-taxi deploy/airflow-scheduler -- airflow dags trigger nyc_e2e_pipeline
-  ```
+- **Skaffold pre-deploy hook** idempotent — xử lý clean uninstall, namespace reset, release PV claims, image `:k8s` alias tagging, và tar-sync project files + raw data vào kind-worker hostPath PVCs.
 - **PVC Sync thủ công** (khi không dùng skaffold):
   ```bash
   cd /home/dwcks/vsf_gsm/nyc_new
@@ -281,13 +320,27 @@ CDC bridge chạy vòng lặp poll với idle timeout (5s) — tự động tho�
 - **S3 commit fix**: `spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2`
   bắt buộc vì MinIO không hỗ trợ atomic S3 rename.
 - **MinIO credentials**: `minio` / `minio123`. Spark dùng `s3a://`, Trino dùng `s3://`.
-- **Tất cả dbt models** là `materialized='view'` — Hive file-based HMS không hỗ trợ `RENAME TABLE`.
+- **Postgres analytics credentials**: `analytics` / `analytics`, DB `nyc_analytics`, schema `public`. Trino vẫn là query engine cho dữ liệu silver; Postgres chỉ dùng cho gold serving layer.
+- **Tất cả dbt models** là `materialized='view'` (target Trino) hoặc `materialized='table'` (target postgres_analytics cho gold). Hive file-based HMS không hỗ trợ `RENAME TABLE`.
+- **Spark zone cleaning** tại source: `F.when(F.col("Borough").isin("Unknown","N/A","NV"), F.lit(None))` xử lý NYC TLC zone IDs 264 (Unknown/N/A) và 265 (N/A/Outside of NYC). Belt-and-suspenders `nullif()` trong dbt stg_trips.
+- **Superset**: kết nối Postgres chỉ. Tất cả 33 datasets trong `public.*` schema, 26 charts (echarts/pie/table), dashboard "NYC Taxi Gold Analytics". `position_json` rebuild sạch mỗi lần bootstrap để tránh stale form_data cache.
 - **Port-forward sống lâu**: `scripts/k8s_ui.sh` dùng `setsid -f` để tiến trình sống sau khi `make` thoát.
   Skaffold tự động quản lý port-forwards trong `dev` mode.
 - **Kafka bootstrap**: Docker Compose `localhost:29092`, container `nyc_kafka:9092`, **K8s `svc-kafka:9092`**
   (⚠️ không dùng `kafka:9092` — service name trong K8s namespace `nyc-taxi` có prefix `svc-`).
+- **Airflow DAG management**: 3 DAGs tự động chạy trên lịch:
+  - `nyc_e2e_pipeline` (@monthly): Spark batch + streaming → trino_bootstrap → dbt_build → [gold_export ∥ materialize_postgres] → superset_bootstrap → analytics_check
+  - `nyc_analytics_refresh` (@weekly): dbt_build → [gold_export ∥ materialize_postgres] → superset_bootstrap → analytics_check
+  - `nyc_cdc_pipeline` (manual): cdc_seed → cdc_register → cdc_bridge
+  
+  Kích hoạt thủ công: Airflow UI (http://localhost:39085) hoặc:
+  ```bash
+  kubectl exec -n nyc-taxi deploy/airflow-scheduler -- airflow dags trigger nyc_e2e_pipeline
+  ```
 - **Skaffold file-sync hot-reload**: `file-sync` pod (chạy root, mount PVC) nhận file từ `skaffold sync`.
   Sync rules trong `skaffold.yaml` map `airflow/dags/`, `jobs/`, `scripts/`, `dbt/`, `charts/` → `/opt/project/...`.
 - **Postgres init**: Dùng Python `psycopg2` (không cần `psql` / postgresql-client).
 - **topic-init**: Dùng `wait-kafka` (TCP wait script, có sẵn trong tools image) + `svc-kafka:9092`.
 - **Helm chart**: Tất cả manifests đều trong `charts/nyc-taxi/templates/`. Deploy qua `deploy.helm` trong skaffold.yaml.
+- **Trino params**: phải dùng placeholder `?` (paramstyle='qmark'), KHÔNG phải `%s`. Catalog phải set qua `trino_connect(catalog="hive")` hoặc prefix trong query.
+- **Trino metastore**: lưu ở `/opt/project/data/trino-metastore` trên `raw-data-pvc` để tables sống sót qua pod restart.
