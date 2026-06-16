@@ -234,9 +234,13 @@ def main() -> int:
         if viz == "pie" and "metrics" in params:
             params["metric"] = params.pop("metrics")[0]
 
-        # dist_bar: cap row_limit to keep bars readable
+        # Cap row_limit to keep charts compact
         if viz == "dist_bar" and "row_limit" not in params:
             params["row_limit"] = 15
+        elif viz.startswith("echarts_") and "row_limit" not in params:
+            params["row_limit"] = 500
+        elif viz == "pie" and "row_limit" not in params:
+            params["row_limit"] = 10
 
         # Delete old
         old = existing.get(name)
