@@ -4,7 +4,7 @@
 Idempotent; skips existing resources. Builds clean position_json to
 avoid stale dashboard form_data cache.
 """
-import json, os, sys, urllib.request, urllib.error
+import json, os, sys, time, urllib.request, urllib.error
 
 BASE = os.environ.get("SUPERSET_URL", "http://localhost:8088") + "/api/v1"
 PG_ANALYTICS_URI = os.environ.get(
@@ -158,6 +158,7 @@ def main() -> int:
 
     # 4. Charts — delete old, create new, rebuild position_json
     existing = {c["slice_name"]: c for c in get("/chart/?q=(page_size:200)")["result"]}
+    chart_meta = {name: (viz, ds_key) for name, viz, ds_key, _ in CHART_DEFS}
     chart_ids = {}
     for name, viz, ds_key, params in CHART_DEFS:
         ds_id = ds_ids.get(ds_key)
@@ -214,24 +215,39 @@ def main() -> int:
         chart_ids[name] = cid
         print(f"[chart] {name} ({viz}) id={cid}")
 
-    # 5. Rebuild position_json with proper Superset layout structure
-    # Each component needs id, type, meta, parents, children for the
-    # layout engine to render properly.
-    pos = {"DASHBOARD_VERSION_KEY": "v2",
-           "ROOT": {"id": "ROOT_ID", "type": "ROOT",
-                    "children": ["GRID_ID"]},
-           "GRID_ID": {"id": "GRID_ID", "type": "GRID",
-                       "children": [],
-                       "parents": ["ROOT_ID"]}}
-    for i, (_, cid) in enumerate(chart_ids.items()):
-        sid = f"CHART-{i}"
-        pos["GRID_ID"]["children"].append(sid)
-        pos[sid] = {"id": sid, "type": "CHART",
-                    "meta": {"chartId": cid, "width": 4, "height": 50},
-                    "parents": ["ROOT_ID", "GRID_ID"],
-                    "children": []}
+    # 5. Build dashboard with single MARKDOWN element containing links to
+    # all charts. This bypasses the Superset layout engine entirely,
+    # avoiding the "findFirstParentContainer.js: t is undefined" error
+    # caused by programmatically-built position_json missing react-grid-layout
+    # fields (x/y/w/h/i/minW). Users click links to open charts in Explore.
+    rows_html = "\n".join(
+        f'<tr><td>{name}</td>'
+        f'<td><a href="/superset/explore/?slice_id={cid}">{chart_meta[name][0]}</a></td>'
+        f'<td><code>{chart_meta[name][1]}</code></td></tr>'
+        for name, cid in chart_ids.items()
+    )
+    markdown_text = (
+        '# NYC Taxi Gold Analytics\n\n'
+        f'**{len(chart_ids)} charts** — click a chart type to open in Explore.\n\n'
+        '| Chart | Type | Source table |\n'
+        '|-------|------|-------------|\n'
+        + rows_html
+    )
+    md_id = f"MARKDOWN-{int(time.time())}"
+    pos = {
+        "DASHBOARD_VERSION_KEY": "v2",
+        "ROOT_ID": {"id": "ROOT_ID", "type": "ROOT",
+                     "children": ["GRID_ID"]},
+        "GRID_ID": {"id": "GRID_ID", "type": "GRID",
+                     "children": [md_id],
+                     "parents": ["ROOT_ID"]},
+        md_id: {"id": md_id, "type": "MARKDOWN",
+                 "meta": {"code": markdown_text, "width": 12, "height": 50},
+                 "parents": ["ROOT_ID", "GRID_ID"],
+                 "children": []},
+    }
     put(f"/dashboard/{dash_id}", {"position_json": json.dumps(pos)})
-    print(f"[dashboard] layout rebuilt: {len(chart_ids)} charts")
+    print(f"[dashboard] layout rebuilt: 1 MARKDOWN with {len(chart_ids)} chart links")
 
     print(f"\n{'='*60}\nDone: DB={pg_id}, Datasets={len(ds_ids)}, "
           f"Charts={len(chart_ids)}, Dashboard={dash_id}\n{'='*60}")
