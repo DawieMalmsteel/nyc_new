@@ -167,10 +167,30 @@ def main() -> int:
         # Auto-generate table params
         if params is _T or params is _T100 or params is _T500:
             cols = ds_cols.get(ds_key, [])
-            groupby = [c for c in cols if not c.startswith("pickup_date")][:4] or cols[:4]
+            # Groupby only on dimension columns (skip date/timestamp and measures)
+            MEASURE_COLS = {"trips", "trip_count", "revenue", "total_revenue",
+                            "avg_fare", "avg_tip", "avg_tip_pct", "avg_distance",
+                            "count", "pickup_count", "dropoff_count",
+                            "net_flow", "net_flow_ratio", "imbalance_score",
+                            "passenger_count", "tip_amount", "fare_amount",
+                            "total_amount", "trip_distance", "utilization_rate",
+                            "unique_vendors", "market_share_pct"}
+            groupby = [c for c in cols
+                       if not c.startswith("pickup_")
+                       and not c.startswith("dropoff_")
+                       and not c.endswith("_at")
+                       and c not in MEASURE_COLS][:4] or cols[:4]
             rl = 100 if params is _T100 else 500 if params is _T500 else 50
-            params = {"groupby": groupby, "row_limit": rl,
-                      "time_range": "No filter"}
+            # Add COUNT metric so Superset uses aggregate mode (not raw record scan)
+            params = {
+                "groupby": groupby,
+                "row_limit": rl,
+                "time_range": "No filter",
+                "metrics": [{"aggregate": "COUNT",
+                             "column": {"column_name": groupby[0] if groupby else "*"},
+                             "expressionType": "SIMPLE",
+                             "label": "count"}],
+            }
 
         # orderby for all chart types (prevents dashboard null orderby error)
         ob = (params.get("groupby", [None])[0]
