@@ -35,12 +35,10 @@ project_volume_mount = k8s.V1VolumeMount(
 
 with DAG(
     dag_id="nyc_e2e_pipeline",
-    description="NYC Taxi full pipeline: Spark -> Trino -> dbt -> Superset",
+    description="NYC Taxi full pipeline: Spark -> Trino -> dbt -> Superset (single-run demo)",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2024, 1, 1),
-    end_date=datetime(2024, 3, 31),
-    schedule="@monthly",
-    catchup=True,
+    schedule=None,
     max_active_runs=1,
     tags=["nyc", "e2e"],
 ) as dag:
@@ -53,7 +51,7 @@ with DAG(
         name="spark-batch",
         task_id="spark_batch",
         cmds=["/opt/spark/bin/spark-submit"],
-        # Sử dụng Jinja Template lấy năm và tháng của chu kỳ chạy động
+        # Đọc tất cả tháng cùng lúc bằng glob pattern
         arguments=[
             "--master", "local[*]",
             "--packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
@@ -61,12 +59,10 @@ with DAG(
             "--conf", "spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2",
             "--conf", "spark.scheduler.mode=FAIR",
             "/opt/project/jobs/spark_local_batch.py",
-            "--input", "s3a://nyc-raw/yellow_taxi/year={{ logical_date.strftime('%Y') }}/month={{ logical_date.strftime('%m') }}/yellow_tripdata_{{ logical_date.strftime('%Y') }}-{{ logical_date.strftime('%m') }}.parquet",
+            "--input", "s3a://nyc-raw/yellow_taxi/year=*/month=*/*.parquet",
             "--lookup", "s3a://nyc-lookup/taxi_zone_lookup.csv",
             "--silver", "s3a://nyc-silver/trips",
             "--quarantine", "s3a://nyc-quarantine/invalid_trips",
-            "--year", "{{ logical_date.strftime('%Y') }}",
-            "--month", "{{ logical_date.strftime('%m') }}",
         ],
         env_vars=[
             k8s.V1EnvVar(name="MINIO_ENDPOINT", value="http://svc-minio:9000"),

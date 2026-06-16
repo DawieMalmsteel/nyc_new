@@ -88,8 +88,7 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path,
         F.col("total_amount").cast("double"),
     )
 
-    # Add trip_id (hash of pickup_ts + pickup_loc + dropoff_loc) + source_file
-    input_filename = input_path.split("/")[-1]
+    # Add trip_id (hash of pickup_ts + pickup_loc + dropoff_loc) + metadata columns
     enriched = enriched \
         .withColumn("trip_id",
             F.xxhash64(F.concat_ws("|",
@@ -97,9 +96,6 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path,
                 F.col("pickup_location_id").cast("string"),
                 F.col("dropoff_location_id").cast("string")
             ))) \
-        .withColumn("source_file", F.lit(input_filename))
-    # Add metadata columns
-    enriched = enriched \
         .withColumn("event_ts", F.current_timestamp()) \
         .withColumn("ingestion_ts", F.current_timestamp()) \
         .withColumn("pickup_date", F.to_date(F.col("pickup_ts"))) \
@@ -107,19 +103,35 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path,
         .withColumn("pickup_year", F.year(F.col("pickup_ts"))) \
         .withColumn("pickup_month", F.month(F.col("pickup_ts")))
 
+    # Derive expected year/month from each row's source file path (e.g. .../year=2024/month=01/...).
+    # Use input_file_name() so glob reads resolve per-file.  Fall back to the explicit --year/--month
+    # args when passed (single-file mode); otherwise filter edge rows from adjacent months.
+    enriched = enriched \
+        .withColumn("_src_file", F.input_file_name()) \
+        .withColumn("_expected_year",
+            F.regexp_extract(F.col("_src_file"), r"year=(\d{4})", 1).cast("int")) \
+        .withColumn("_expected_month",
+            F.regexp_extract(F.col("_src_file"), r"month=(\d{1,2})", 1).cast("int")) \
+        .withColumn("source_file",
+            F.element_at(F.split(F.col("_src_file"), "/"), -1))
+
     # --- 3b. Filter to expected year/month ---
     # Raw TLC parquet files often contain edge rows from adjacent months
     # (e.g. 2024-01 file includes late December 2023 trips).  Filter strictly
     # so silver partitions contain only data matching the file's target period.
     total_before = enriched.count()
-    if expected_year is not None:
-        enriched = enriched.filter(F.col("pickup_year") == F.lit(expected_year))
-    if expected_month is not None:
-        enriched = enriched.filter(F.col("pickup_month") == F.lit(expected_month))
+    year_filter = F.col("pickup_year") == (F.lit(expected_year) if expected_year is not None else F.col("_expected_year"))
+    month_filter = F.col("pickup_month") == (F.lit(expected_month) if expected_month is not None else F.col("_expected_month"))
+    enriched = enriched.filter(year_filter & month_filter)
     filtered = total_before - enriched.count()
     if filtered > 0:
+        yt = expected_year if expected_year is not None else "file"
+        mt = f"{expected_month:02d}" if expected_month is not None else "file"
         print(f"  year/month filter dropped {filtered} rows "
-              f"(expected {expected_year}-{expected_month:02d}, kept {enriched.count()})")
+              f"(expected {yt}-{mt}, kept {enriched.count()})")
+
+    # Drop temp columns used only for filtering
+    enriched = enriched.drop("_src_file", "_expected_year", "_expected_month")
 
     # Join zones
     enriched = enriched.join(pickup_zones, on="pickup_location_id", how="left")
