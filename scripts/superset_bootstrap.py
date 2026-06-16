@@ -199,6 +199,10 @@ def main() -> int:
             if ob:
                 params["orderby"] = [[ob, False]]; params["order_desc"] = False
 
+        # Pie charts use singular "metric" control (not "metrics" array)
+        if viz == "pie" and "metrics" in params:
+            params["metric"] = params.pop("metrics")[0]
+
         # Delete old
         old = existing.get(name)
         if old and old.get("datasource_id") == ds_id:
