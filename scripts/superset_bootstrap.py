@@ -193,14 +193,11 @@ def main() -> int:
                              "label": "count"}],
             }
 
-        # orderby for all chart types (prevents dashboard null orderby error)
-        ob = (params.get("groupby", [None])[0]
-              if params.get("groupby") else
-              params.get("metrics", [{}])[0].get("label"))
-        if ob:
-            params["orderby"] = [[ob, False]]; params["order_desc"] = False
-        else:
-            params["order_desc"] = False
+        # orderby: skip for pie (backend rejects dimension orderby for pie)
+        if viz != "pie":
+            ob = params.get("metrics", [{}])[0].get("label")
+            if ob:
+                params["orderby"] = [[ob, False]]; params["order_desc"] = False
 
         # Delete old
         old = existing.get(name)
