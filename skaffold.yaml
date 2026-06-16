@@ -77,6 +77,22 @@ deploy:
                   --exclude='*.pyo' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
+                echo "=== Tagging images with :k8s alias ==="
+                for node in kind-worker kind-worker2 kind-control-plane; do
+                  for img in nyc-pipeline-tools nyc-dbt nyc-airflow nyc-superset; do
+                    # Find the actual loaded tag (git-sha) and alias as :k8s
+                    sha_tag=$(docker exec $node crictl images -q docker.io/library/$img:latest 2>/dev/null)
+                    if [ -z "$sha_tag" ]; then
+                      sha_tag=$(docker exec $node crictl images 2>/dev/null | awk -v img=$img '$2 ~ "library/"img"$" {print $3; exit}')
+                    fi
+                    if [ -n "$sha_tag" ]; then
+                      docker exec $node ctr -n k8s.io image tag \
+                        docker.io/library/$img:$sha_tag \
+                        docker.io/library/$img:k8s 2>/dev/null && \
+                        echo "  $node: $img -> :k8s ($sha_tag)"
+                    fi
+                  done
+                done
                 echo "=== Syncing raw data to PVC ==="
                 tar cf - \
                   --exclude='*.crc' \
