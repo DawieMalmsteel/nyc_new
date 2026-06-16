@@ -215,42 +215,41 @@ def main() -> int:
         chart_ids[name] = cid
         print(f"[chart] {name} ({viz}) id={cid}")
 
-    # 5. Build position_json with proper react-grid-layout fields
-    # Superset 4.1.2 frontend uses react-grid-layout and expects each
-    # component to have x/y/w/h grid fields plus id/type/meta/children/parents.
-    # Without these, the layout engine throws
-    # "findFirstParentContainer.js: t is undefined".
-    pos = {"DASHBOARD_VERSION_KEY": "v2"}
-    COLS = 3  # 3 charts per row (each 4 cols wide on 12-col grid)
-    W = 12 // COLS
-    ROW_H = 6
-    pos["ROOT_ID"] = {
-        "id": "ROOT_ID", "type": "ROOT",
-        "children": ["GRID_ID"],
+    # 5. Build MARKDOWN dashboard with HTML table of chart links.
+    # CHART-type components in hand-built position_json cause
+    # "TypeError: Cannot read properties of undefined (reading 'width')"
+    # in Superset 4.1.2's ChartHolder (component.meta.width lookup fails
+    # because the Redux chart store doesn't have the chart entities even
+    # when linked). MARKDOWN components bypass the grid engine entirely.
+    rows_html = "\n".join(
+        f'    <tr><td><a href="/superset/explore/?slice_id={cid}" target="_blank">'
+        f'{name}</a></td><td>{chart_meta[name][0]}</td>'
+        f'<td><code>{chart_meta[name][1]}</code></td></tr>'
+        for name, cid in chart_ids.items()
+    )
+    md_text = (
+        f'<h1>NYC Taxi Gold Analytics</h1>\n'
+        f'<p><strong>{len(chart_ids)} charts</strong> — click a chart name to open in Explore.</p>\n'
+        f'<table border="1" cellpadding="6" cellspacing="0">\n'
+        f'  <tr><th>Chart</th><th>Type</th><th>Source table</th></tr>\n'
+        f'{rows_html}\n'
+        f'</table>'
+    )
+    md_id = f"MARKDOWN-{int(time.time())}"
+    pos = {
+        "DASHBOARD_VERSION_KEY": "v2",
+        "ROOT_ID": {"id": "ROOT_ID", "type": "ROOT",
+                     "children": ["GRID_ID"]},
+        "GRID_ID": {"id": "GRID_ID", "type": "GRID",
+                     "children": [md_id],
+                     "parents": ["ROOT_ID"]},
+        md_id: {"id": md_id, "type": "MARKDOWN",
+                 "meta": {"code": md_text, "width": 12, "height": 50},
+                 "parents": ["ROOT_ID", "GRID_ID"],
+                 "children": []},
     }
-    pos["GRID_ID"] = {
-        "id": "GRID_ID", "type": "GRID",
-        "children": [f"CHART-{i}" for i in range(len(chart_ids))],
-        "parents": ["ROOT_ID"],
-    }
-    for i, (name, cid) in enumerate(chart_ids.items()):
-        col = i % COLS
-        row = i // COLS
-        viz, ds_key = chart_meta[name]
-        pos[f"CHART-{i}"] = {
-            "id": f"CHART-{i}",
-            "type": "CHART",
-            "x": col * W, "y": row * ROW_H, "w": W, "h": ROW_H,
-            "meta": {
-                "chartId": cid, "width": W, "height": ROW_H,
-                "sliceName": name,
-                "text": "",
-            },
-            "parents": ["ROOT_ID", "GRID_ID"],
-            "children": [],
-        }
     put(f"/dashboard/{dash_id}", {"position_json": json.dumps(pos)})
-    print(f"[dashboard] layout rebuilt: {len(chart_ids)} chart slots with x/y/w/h")
+    print(f"[dashboard] layout rebuilt: 1 MARKDOWN with {len(chart_ids)} chart links")
 
     print(f"\n{'='*60}\nDone: DB={pg_id}, Datasets={len(ds_ids)}, "
           f"Charts={len(chart_ids)}, Dashboard={dash_id}\n{'='*60}")
