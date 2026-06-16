@@ -26,7 +26,7 @@ spec:
           value: debezium_offsets
         - name: STATUS_STORAGE_TOPIC
           value: debezium_statuses
-        image: debezium/connect:2.5
+        image: debezium/connect:2.7.3.Final
         imagePullPolicy: IfNotPresent
         name: debezium
         ports:
