@@ -256,25 +256,47 @@ def main() -> int:
         chart_ids[name] = cid
         print(f"[chart] {name} ({viz}) id={cid} — linked to dashboard {dash_id}")
 
-    # 5. Build MARKDOWN dashboard with HTML table of chart links.
-    # CHART-type components in hand-built position_json cause
-    # "TypeError: Cannot read properties of undefined (reading 'width')"
-    # in Superset 4.1.2's ChartHolder (component.meta.width lookup fails
-    # because the Redux chart store doesn't have the chart entities even
-    # when linked). MARKDOWN components bypass the grid engine entirely.
-    rows_html = "\n".join(
-        f'    <tr><td><a href="/superset/explore/?slice_id={cid}" target="_blank">'
-        f'{name}</a></td><td>{chart_meta[name][0]}</td>'
-        f'<td><code>{chart_meta[name][1]}</code></td></tr>'
-        for name, cid in chart_ids.items()
-    )
+    # 5. Card-based MARKDOWN dashboard — CHART grid crashes Superset 4.1.2.
+    # Group charts by viz type for visual hierarchy with inline CSS.
+    groups = []
+    for name, cid in chart_ids.items():
+        viz, ds_key = chart_meta[name]
+        groups.append((viz, name, cid, ds_key))
+    groups.sort(key=lambda x: {"big_number_total": "0", "echarts_timeseries_bar": "1",
+                 "echarts_timeseries_line": "1", "pie": "2",
+                 "dist_bar": "3", "table": "4"}.get(x[0], "9"))
+
+    def _card(name, cid, viz, ds_key):
+        return (
+            f'<div style="background:#fff;border:1px solid #e0e0e0;border-radius:6px;'
+            f'padding:8px 14px;margin:4px;display:inline-block;min-width:220px;font-size:13px">'
+            f'<a href="/superset/explore/?slice_id={cid}" target="_blank" '
+            f'style="color:#1a73e8;text-decoration:none;font-weight:500">{name}</a>'
+            f'<br><span style="color:#999;font-size:10px">{viz}</span> '
+            f'<span style="color:#bbb;font-size:9px">{ds_key}</span></div>')
+
+    cards_all = "".join(_card(n, cid, viz, ds) for viz, n, cid, ds in groups)
+    labels = {"big_number_total": "KPIs", "echarts_timeseries_bar": "Trends",
+              "echarts_timeseries_line": "Trends", "pie": "Breakdowns",
+              "dist_bar": "Rankings", "table": "Details"}
+    icons = {"KPIs": "📊", "Trends": "📈", "Breakdowns": "🥧",
+             "Rankings": "📉", "Details": "📋"}
+    sections_html = ""
+    seen = set()
+    for viz, _, _, _ in groups:
+        label = labels.get(viz, "Other")
+        if label not in seen:
+            seen.add(label)
+            sections_html += (f'<h3 style="color:#333;margin-top:20px;border-bottom:2px solid #1a73e8;'
+                              f'padding-bottom:4px">{icons[label]} {label}</h3>')
+
     md_text = (
-        f'<h1>NYC Taxi Gold Analytics</h1>\n'
-        f'<p><strong>{len(chart_ids)} charts</strong> — click a chart name to open in Explore.</p>\n'
-        f'<table border="1" cellpadding="6" cellspacing="0">\n'
-        f'  <tr><th>Chart</th><th>Type</th><th>Source table</th></tr>\n'
-        f'{rows_html}\n'
-        f'</table>'
+        f'<div style="font-family:system-ui,sans-serif;max-width:1100px">'
+        f'<h1 style="border-bottom:3px solid #1a73e8;padding-bottom:6px">NYC Taxi Gold Analytics</h1>'
+        f'<p style="color:#666">{len(chart_ids)} interactive charts — click any to explore</p>'
+        f'{sections_html}'
+        f'<div style="display:flex;flex-wrap:wrap;gap:4px">{cards_all}</div>'
+        f'<hr><p style="color:#aaa;font-size:10px">NYC Taxi Pipeline — Gold Layer</p></div>'
     )
     md_id = f"MARKDOWN-{int(time.time())}"
     pos = {
@@ -285,7 +307,7 @@ def main() -> int:
                      "children": [md_id],
                      "parents": ["ROOT_ID"]},
         md_id: {"id": md_id, "type": "MARKDOWN",
-                 "meta": {"code": md_text, "width": 12, "height": 50},
+                 "meta": {"code": md_text, "width": 12, "height": 80},
                  "parents": ["ROOT_ID", "GRID_ID"],
                  "children": []},
     }
