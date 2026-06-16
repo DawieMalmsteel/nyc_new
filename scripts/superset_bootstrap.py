@@ -42,14 +42,14 @@ _T100 = "row_limit_100"
 _T500 = "row_limit_500"
 
 CHART_DEFS = [
-    # echarts
+    # ── timeseries (echarts bar/line) ──
     ("Hourly Trip Pattern", "echarts_timeseries_bar", "fact_trips_hourly",
      {"metrics": [_m("trip_count")], "groupby": ["pickup_hour"],
       "granularity_sqla": "pickup_date", "time_range": "No filter"}),
-    ("Daily Revenue (KPI)", "echarts_timeseries_bar", "kpi_daily_overview",
+    ("Daily Revenue", "echarts_timeseries_bar", "kpi_daily_overview",
      {"metrics": [_m("revenue")], "granularity_sqla": "pickup_date",
       "time_range": "No filter"}),
-    ("Daily Trips (KPI)", "echarts_timeseries_line", "kpi_daily_overview",
+    ("Daily Trips", "echarts_timeseries_line", "kpi_daily_overview",
      {"metrics": [_m("trips")], "granularity_sqla": "pickup_date",
       "time_range": "No filter"}),
     ("Weekly Trip Trends", "echarts_timeseries_bar", "kpi_weekly_trends",
@@ -58,7 +58,11 @@ CHART_DEFS = [
     ("Row Count Trend", "echarts_timeseries_line", "dq_row_count_trend",
      {"metrics": [_m("trip_count")], "granularity_sqla": "pickup_date",
       "time_range": "No filter"}),
-    # pie
+    ("Borough Trips Over Time", "echarts_timeseries_bar", "fact_trips_borough",
+     {"metrics": [_m("trip_count")], "groupby": ["pickup_borough"],
+      "granularity_sqla": "pickup_date", "time_range": "No filter"}),
+
+    # ── pie ──
     ("Borough Market Share", "pie", "kpi_borough_comparison",
      {"metrics": [_m("revenue")], "groupby": ["pickup_borough"],
       "time_range": "No filter"}),
@@ -68,28 +72,48 @@ CHART_DEFS = [
     ("Vendor Market Share", "pie", "kpi_vendor_performance",
      {"metrics": [_m("trips")], "groupby": ["vendor_id"],
       "time_range": "No filter"}),
-    # tables — small
-    ("Monthly Revenue Growth", "table", "kpi_monthly_summary", _T100),
-    ("Top Pickup Zones", "table", "route_top_pickup_zones", _T100),
-    ("Top Dropoff Zones", "table", "route_top_dropoff_zones", _T100),
-    ("Popular Routes", "table", "route_popular_routes", _T100),
-    ("Airport Trip Analysis", "table", "route_airport_analysis", _T100),
-    ("Cross-Borough Routes", "table", "route_cross_borough", _T100),
-    ("Borough OD Matrix", "table", "od_borough_matrix", _T100),
-    ("Trip Distance Distribution", "table", "ops_trip_distance_distribution", _T100),
-    ("Data Quality Summary", "table", "dq_validation_summary", _T100),
+    ("Airport Direction", "pie", "route_airport_analysis",
+     {"metrics": [_m("trip_count")], "groupby": ["direction"],
+      "time_range": "No filter"}),
+
+    # ── big_number KPI ──
+    ("All-Time Trip Count", "big_number_total", "kpi_daily_overview",
+     {"metric": _m("trips"), "time_range": "No filter"}),
+    ("Total Revenue", "big_number_total", "kpi_daily_overview",
+     {"metric": _m("revenue"), "time_range": "No filter"}),
+
+    # ── dist_bar (categorical comparison) ──
+    ("Top Pickup Zones", "dist_bar", "route_top_pickup_zones",
+     {"metrics": [_m("trip_count")], "groupby": ["pickup_zone"]}),
+    ("Top Dropoff Zones", "dist_bar", "route_top_dropoff_zones",
+     {"metrics": [_m("trip_count")], "groupby": ["dropoff_zone"]}),
+    ("Popular Routes", "dist_bar", "route_popular_routes",
+     {"metrics": [_m("trip_count")], "groupby": ["pickup_zone", "dropoff_zone"]}),
+    ("Airport Trip Stats", "dist_bar", "route_airport_analysis",
+     {"metrics": [_m("trip_count")], "groupby": ["airport"]}),
+    ("Cross-Borough Routes", "dist_bar", "route_cross_borough",
+     {"metrics": [_m("trip_count")], "groupby": ["pickup_borough", "dropoff_borough"]}),
+    ("Trip Distance Dist.", "dist_bar", "ops_trip_distance_distribution",
+     {"metrics": [_m("trip_count")], "groupby": ["distance_bucket"]}),
+    ("Zone Performance", "dist_bar", "kpi_zone_performance",
+     {"metrics": [_m("pickups")], "groupby": ["zone"]}),
+    ("Zone Net Flow", "dist_bar", "kpi_zone_net_flow",
+     {"metrics": [_m("net_flow")], "groupby": ["zone"]}),
+    ("Passenger Count Pat.", "dist_bar", "ops_passenger_count_pattern",
+     {"metrics": [_m("trip_count")], "groupby": ["passenger_count"]}),
+    ("Peak Hours", "dist_bar", "ops_peak_hours_heatmap",
+     {"metrics": [_m("trip_count")], "groupby": ["pickup_hour"]}),
+    ("Monthly Summary", "dist_bar", "kpi_monthly_summary",
+     {"metrics": [_m("total_revenue")], "groupby": ["pickup_month"]}),
+
+    # ── tables (detail/lookup only) ──
+    ("Data Quality", "table", "dq_validation_summary", _T100),
     ("Batch Metadata", "table", "dq_batch_metadata", _T),
-    ("Borough Trip Summary", "table", "fact_trips_borough", _T100),
-    # tables — heavy (reduced row_limit to keep dashboard fast)
     ("Hourly Zone Detail", "table", "fact_trips_hourly_zone", _T),
-    ("Zone Performance", "table", "kpi_zone_performance", _T),
-    ("Zone Net Flow", "table", "kpi_zone_net_flow", _T),
-    ("Airport Zone Matrix", "table", "route_airport_zone_matrix", _T),
-    ("Passenger Count Pattern", "table", "ops_passenger_count_pattern", _T),
-    # tables — medium
     ("Zone Directory", "table", "dim_zone", _T100),
     ("Zone Groups", "table", "dim_zone_grouped", _T100),
-    ("Peak Hours Heatmap", "table", "ops_peak_hours_heatmap", _T100),
+    ("Airport Zone Matrix", "table", "route_airport_zone_matrix", _T),
+    ("Borough OD Matrix", "table", "od_borough_matrix", _T100),
 ]
 
 
