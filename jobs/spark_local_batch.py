@@ -22,7 +22,8 @@ from pyspark.sql import SparkSession, functions as F, types as T
 _NOT_ZONE = ["Unknown", "N/A", "NV"]
 
 
-def run_batch(input_path, lookup_path, silver_path, quarantine_path):
+def run_batch(input_path, lookup_path, silver_path, quarantine_path,
+              expected_year=None, expected_month=None):
     print(f"Starting enriched batch")
     print(f"  input:      {input_path}")
     print(f"  lookup:     {lookup_path}")
@@ -105,6 +106,20 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path):
         .withColumn("pickup_hour", F.hour(F.col("pickup_ts"))) \
         .withColumn("pickup_year", F.year(F.col("pickup_ts"))) \
         .withColumn("pickup_month", F.month(F.col("pickup_ts")))
+
+    # --- 3b. Filter to expected year/month ---
+    # Raw TLC parquet files often contain edge rows from adjacent months
+    # (e.g. 2024-01 file includes late December 2023 trips).  Filter strictly
+    # so silver partitions contain only data matching the file's target period.
+    total_before = enriched.count()
+    if expected_year is not None:
+        enriched = enriched.filter(F.col("pickup_year") == F.lit(expected_year))
+    if expected_month is not None:
+        enriched = enriched.filter(F.col("pickup_month") == F.lit(expected_month))
+    filtered = total_before - enriched.count()
+    if filtered > 0:
+        print(f"  year/month filter dropped {filtered} rows "
+              f"(expected {expected_year}-{expected_month:02d}, kept {enriched.count()})")
 
     # Join zones
     enriched = enriched.join(pickup_zones, on="pickup_location_id", how="left")
@@ -194,5 +209,10 @@ if __name__ == "__main__":
     parser.add_argument("--lookup", required=True)
     parser.add_argument("--silver", default="s3a://nyc-silver/trips")
     parser.add_argument("--quarantine", default="s3a://nyc-quarantine/invalid_trips")
+    parser.add_argument("--year", type=int, default=None,
+                        help="Filter to this pickup_year (omit to keep all)")
+    parser.add_argument("--month", type=int, default=None,
+                        help="Filter to this pickup_month (omit to keep all)")
     args = parser.parse_args()
-    run_batch(args.input, args.lookup, args.silver, args.quarantine)
+    run_batch(args.input, args.lookup, args.silver, args.quarantine,
+              expected_year=args.year, expected_month=args.month)
