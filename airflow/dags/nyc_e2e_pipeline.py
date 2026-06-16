@@ -60,6 +60,7 @@ with DAG(
             "--conf", "spark.jars.ivy=/opt/project/.ivy2",
             "--conf", "spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2",
             "--conf", "spark.scheduler.mode=FAIR",
+            "/opt/project/jobs/spark_local_batch.py",
             "--input", "s3a://nyc-raw/yellow_taxi/year={{ logical_date.strftime('%Y') }}/month={{ logical_date.strftime('%m') }}/yellow_tripdata_{{ logical_date.strftime('%Y') }}-{{ logical_date.strftime('%m') }}.parquet",
             "--lookup", "s3a://nyc-lookup/taxi_zone_lookup.csv",
             "--silver", "s3a://nyc-silver/trips",
