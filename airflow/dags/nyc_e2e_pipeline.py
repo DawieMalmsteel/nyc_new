@@ -77,20 +77,57 @@ with DAG(
         service_account_name="airflow-sa"
     )
 
-    # 1b. Seed Kafka with demo events (1000 rows from raw parquet)
-    kafka_seed = KubernetesPodOperator(
+    # 1b. CDC: Seed Postgres (demo: 1000 rows) → Register Debezium → Bridge to Kafka
+    cdc_seed = KubernetesPodOperator(
         namespace="nyc-taxi",
         image="nyc-pipeline-tools:k8s",
         image_pull_policy="IfNotPresent",
-        name="kafka-seed",
-        task_id="kafka_seed",
-        cmds=["python3"],
+        name="cdc-seed",
+        task_id="cdc_seed",
+        cmds=["entrypoint-cdc-seed"],
         arguments=[
-            "/opt/project/scripts/seed_kafka_events.py",
             "--input", "/opt/project/data/raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet",
-            "--bootstrap-server", "svc-kafka:9092",
-            "--topic", "taxi.trip.events",
             "--max-rows", "1000",
+            "--dsn", "postgresql://postgres:postgres@svc-postgres-cdc:5432/nyc_taxi",
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa",
+    )
+
+    cdc_register = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:k8s",
+        image_pull_policy="IfNotPresent",
+        name="cdc-register",
+        task_id="cdc_register",
+        cmds=["entrypoint-cdc-register"],
+        arguments=[
+            "--debezium-url", "http://svc-debezium:8083",
+            "--postgres-host", "svc-postgres-cdc",
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa",
+    )
+
+    cdc_bridge = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:k8s",
+        image_pull_policy="IfNotPresent",
+        name="cdc-bridge",
+        task_id="cdc_bridge",
+        cmds=["entrypoint-cdc-bridge"],
+        arguments=[
+            "--bootstrap-server", "svc-kafka:9092",
+            "--input-topic", "nyc_cdc.public.trips",
+            "--output-topic", "taxi.trip.events",
+            "--idle-timeout", "30",
+            "--flush-interval", "500",
         ],
         volumes=[project_volume],
         volume_mounts=[project_volume_mount],
@@ -267,9 +304,8 @@ with DAG(
         service_account_name="airflow-sa"
     )
 
-    # Khai báo luồng phụ thuộc tuyến tính tuyệt đẹp
-    # Demo: seed Kafka events → streaming consumes them → both batch+stream feed Trino
-    kafka_seed >> spark_streaming
+    # Dependencies: CDC pipeline → streams → batch+stream converge at Trino
+    cdc_seed >> cdc_register >> cdc_bridge >> spark_streaming
     spark_batch >> trino_bootstrap
     spark_streaming >> trino_bootstrap
     
