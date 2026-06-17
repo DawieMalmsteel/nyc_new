@@ -94,13 +94,16 @@ flowchart TD
 # Prerequisites: kind cluster must exist
 # Create if needed: kind create cluster --config kind.yaml
 
-# 1. Deploy everything (build images + sync files + Helm install + port-forwards + watch)
+# 1. One-time setup (after first clone or cluster recreation)
+make kind-setup
+
+# 2. Deploy everything (build images + sync files + Helm install + port-forwards + watch)
 skaffold dev --namespace nyc-taxi
 
 # One-shot deploy (no watch):
 skaffold run --namespace nyc-taxi
 
-# 2. Wait for setup jobs to complete (topic-init, postgres-init, minio-setup, dbt-init)
+# 3. Wait for setup jobs to complete (topic-init, postgres-init, minio-setup, dbt-init)
 kubectl wait --for=condition=complete job -n nyc-taxi --all --timeout=180s
 
 # 3. Open UIs
@@ -189,13 +192,14 @@ NYE: gold_export is independent (best-effort), materialize is critical path
 ### Kubernetes (kind) via Skaffold
 | Target / Command | Description |
 |-----------------|-------------|
+| `make kind-setup` | **One-time** — create cluster + load all 10 public images |
 | `skaffold dev --namespace nyc-taxi` | **Primary** — build, deploy, port-forward, watch, auto-sync |
 | `skaffold run --namespace nyc-taxi` | One-shot deploy (no watch) |
 | `skaffold build --namespace nyc-taxi` | Build images only |
 | `make k8s-cluster` | Create kind cluster (3 nodes) |
 | `make k8s-ui` | Start port-forwards for all UIs (39080-39086) |
 | `make k8s-ui-stop` | Stop all port-forwards |
-| `make k8s-destroy` | Delete cluster (services + volumes + images) |
+| `~~make k8s-destroy~~` | ⛔ Disabled — use `kind delete cluster --name kind` directly |
 | `make k8s-status` | Show pod status |
 | `make k8s-logs JOB=<name>` | Tail logs for a job |
 | `make k8s-verify` | Verify row counts via Trino |
@@ -290,8 +294,14 @@ Postgres analytics DB (svc-postgres-analytics:5432 / nyc_analytics):
 
 ## CDC Pipeline
 
+CDC can run as a **standalone DAG** (`nyc_cdc_pipeline`, manual) or **inline** within the E2E DAG (`nyc_e2e_pipeline`).
+
+The E2E DAG includes CDC steps directly: `cdc_seed → cdc_register → cdc_bridge → spark_streaming`.
+This seeds 1000 rows from raw parquet through Postgres → Debezium → Kafka → Spark Streaming → Silver.
+No separate trigger needed — just run `nyc_e2e_pipeline` from Airflow.
+
 ```bash
-make cdc-seed       # Seed Postgres from Parquet (5000 rows)
+# Standalone CDC (Docker Compose):
 make cdc-register   # Register Debezium connector
 make cdc-bridge     # Bridge CDC events → taxi.trip.events format
 make cdc-verify     # Full CDC E2E verification
@@ -341,4 +351,7 @@ CDC bridge runs as a poll-based loop with idle timeout (5s) — exits automatica
 - **topic-init**: Dùng `wait-kafka` (TCP wait script, có sẵn trong tools image) + `svc-kafka:9092`.
 - **Helm chart**: Tất cả manifests đều trong `charts/nyc-taxi/templates/`. Deploy via `deploy.helm` trong skaffold.yaml.
 - **Trino params**: must use `?` placeholder (paramstyle='qmark'), NOT `%s`. Catalog must be set via `trino_connect(catalog="hive")` or query prefix.
-- **Trino metastore**: stored at `/opt/project/data/trino-metastore` on `raw-data-pvc` so tables survive pod restarts.
+- **Trino memory**: JVM `-Xmx5G`, container limit `8Gi`, query max `5GB`. Heavy CTAS on 25M+ rows may still OOM —
+  the DAG has `retries=3` with 30s backoff to survive transient Trino restarts.
+- **DAG resilience**: `trino_bootstrap` uses `trigger_rule="one_success"` — only needs one of spark_batch
+  or spark_streaming to succeed before proceeding. All tasks have `retries=3` for transient failures.
