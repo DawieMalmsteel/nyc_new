@@ -152,7 +152,7 @@ K8s uses range 39080+:
 - Service naming: `svc-` prefix (e.g., `svc-trino`, `svc-postgres-analytics`).
 - Spark streaming task uses `svc-kafka:9092` (not `kafka:9092`) — K8s service DNS.
 - Airflow uses `KubernetesPodOperator` (not BashOperator). Pods mount `project-files-pvc` at `/opt/project`. SA: `airflow-sa`.
-- Skaffold image tags use git SHA (`9de6055b5b...`). DAG tasks reference `:k8s` — pre-deploy hook `ctr image tag` adds the alias.
+- Skaffold image tags: pre-deploy hook retags `latest → :k8s` on all custom images (`nyc-pipeline-tools`, `nyc-dbt`, `nyc-airflow`, `nyc-superset`). DAG tasks and Helm templates reference `:k8s`.
 - Port-forwards need `--address 0.0.0.0`; use `setsid -f` for survival after `make` exit.
 - If namespace stuck in `Terminating`: `kubectl delete namespace nyc-taxi --force --grace-period=0`.
 

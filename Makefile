@@ -3,10 +3,11 @@
 ## Primary orchestrator: Airflow (K8s)
 ## This Makefile is for local dev/testing with Docker Compose.
 ## For K8s: make k8s-up → starts everything, waits for all pods, verifies UIs.
+#   make kind-setup         # Create cluster + load public images (run once)
 #   make k8s-start           # Start cluster + deploy + core wait + UIs
 #   make k8s-up              # Same but waits for ALL pods, health check, summary
 #   make k8s-stop            # Scale down all services (keep data)
-#   make k8s-destroy         # Delete cluster (volumes + images)
+#   make k8s-destroy         # ⚠️  Destroy cluster (5s confirm delay)
 #   make k8s-ui              # Start port-forwards for all UIs
 
 SHELL := /bin/bash
@@ -18,8 +19,9 @@ DOCKER_NETWORK ?= nyc_new_default
 # ──────────────────────────────────────────────
 # I. Kubernetes (kind) — Primary workflow
 # ──────────────────────────────────────────────
-.PHONY: k8s-cluster k8s-images k8s-deploy k8s-start k8s-up k8s-stop k8s-down k8s-destroy
+.PHONY: k8s-cluster k8s-images k8s-deploy k8s-start k8s-up k8s-stop k8s-destroy
 .PHONY: k8s-ui k8s-ui-stop k8s-status k8s-logs k8s-verify
+.PHONY: kind-setup
 k8s-cluster:                    ## Create kind cluster (3 nodes)
 	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
 
@@ -83,10 +85,20 @@ k8s-stop: k8s-ui-stop          ## Scale down all services (keep data)
 	kubectl scale statefulset -n nyc-taxi --all --replicas=0 2>/dev/null || true
 	@echo "All services stopped"
 
-k8s-destroy: k8s-ui-stop       ## Delete cluster (services + volumes + images)
-	@echo "=== Deleting cluster ==="
-	kind delete cluster --name $(KIND_CLUSTER)
-	@echo "Cluster deleted"
+# k8s-destroy: k8s-ui-stop       ## ⚠️  DESTROYS cluster + all data (USE WITH CAUTION)
+# 	@echo "=== WARNING: This deletes the entire cluster + volumes + images ==="
+# 	@echo "=== Press Ctrl-C within 5s to abort ===" && sleep 5
+# 	kind delete cluster --name $(KIND_CLUSTER)
+# 	@echo "Cluster deleted"
+
+kind-setup:                     ## Create cluster + load all public images (run once)
+	@if kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$"; then \
+		echo "Cluster '$(KIND_CLUSTER)' already exists, loading images only..."; \
+	else \
+		echo "=== Creating kind cluster ==="; \
+		kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG); \
+	fi
+	bash scripts/setup_kind_images.sh $(KIND_CLUSTER)
 
 k8s-ui:                        ## Start port-forwards for all UIs
 	@./scripts/k8s_ui.sh start
