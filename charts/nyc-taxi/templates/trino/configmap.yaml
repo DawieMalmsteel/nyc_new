@@ -7,17 +7,16 @@ data:
     coordinator=true
     http-server.http.port=8080
     discovery.uri=http://svc-trino:8080
-    query.max-memory-per-node=2GB
-    query.max-memory=4GB
+    query.max-memory-per-node=3GB
+    query.max-memory=5GB
     query.max-concurrent-queries=2
   node.properties: |
     node.environment=production
     node.data-dir=/data/trino
     node.id=trino-01
   jvm.config: |
-    -Xmx4G
+    -Xmx5G
     -XX:+UseG1GC
-    -XX:+ExitOnOutOfMemoryError
   log.properties: |
     io.trino=INFO
   hive.properties: |
