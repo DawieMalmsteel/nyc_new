@@ -18,7 +18,8 @@ log = logging.getLogger(__name__)
 DEFAULT_ARGS = {
     "owner": "nyc",
     "depends_on_past": False,
-    "retries": 0,
+    "retries": 3,
+    "retry_delay": timedelta(seconds=30),
     "execution_timeout": timedelta(minutes=30),
 }
 
