@@ -179,6 +179,7 @@ with DAG(
         image_pull_policy="IfNotPresent",
         name="trino-bootstrap",
         task_id="trino_bootstrap",
+        trigger_rule="one_success",  # run if either batch or streaming succeeds
         cmds=["entrypoint-trino-bootstrap"],
         env_vars=[
             k8s.V1EnvVar(name="TRINO_HOST", value="svc-trino"),
