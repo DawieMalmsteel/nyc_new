@@ -80,9 +80,14 @@ deploy:
                 echo "=== Tagging custom images with :k8s alias ==="
                 for img in nyc-pipeline-tools nyc-dbt nyc-airflow nyc-superset; do
                   for node in kind-worker kind-worker2 kind-control-plane; do
-                    docker exec "$node" ctr -n k8s.io image tag \
-                      "docker.io/library/$img:latest" "docker.io/library/$img:k8s" 2>/dev/null && \
-                      echo "  $node: $img -> :k8s" || echo "  $node: $img :k8s SKIP (not found)"
+                    sha_tag=$(docker exec "$node" ctr -n k8s.io images ls -q "name~=docker.io/library/$img:" 2>/dev/null | head -1 | sed 's/.*://')
+                    if [ -n "$sha_tag" ]; then
+                      docker exec "$node" ctr -n k8s.io image tag \
+                        "docker.io/library/$img:$sha_tag" "docker.io/library/$img:k8s" 2>/dev/null && \
+                        echo "  $node: $img -> :k8s" || echo "  $node: $img :k8s FAIL"
+                    else
+                      echo "  $node: $img NOT FOUND"
+                    fi
                   done
                 done
                 echo "=== Syncing raw data to PVC ==="
