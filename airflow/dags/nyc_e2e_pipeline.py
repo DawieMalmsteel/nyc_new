@@ -32,6 +32,15 @@ project_volume_mount = k8s.V1VolumeMount(
     mount_path="/opt/project"
 )
 
+raw_data_volume = k8s.V1Volume(
+    name="raw-data",
+    persistent_volume_claim=k8s.V1PersistentVolumeClaimVolumeSource(claim_name="raw-data-pvc")
+)
+raw_data_volume_mount = k8s.V1VolumeMount(
+    name="raw-data",
+    mount_path="/mnt/nyc-data"
+)
+
 
 with DAG(
     dag_id="nyc_e2e_pipeline",
@@ -86,15 +95,16 @@ with DAG(
         task_id="cdc_seed",
         cmds=["entrypoint-cdc-seed"],
         arguments=[
-            "--input", "/opt/project/data/raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet",
+            "--input", "/mnt/nyc-data/data/nyc-raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet",
             "--max-rows", "1000",
             "--dsn", "postgresql://postgres:postgres@svc-postgres-cdc:5432/nyc_taxi",
         ],
-        volumes=[project_volume],
-        volume_mounts=[project_volume_mount],
+        volumes=[project_volume, raw_data_volume],
+        volume_mounts=[project_volume_mount, raw_data_volume_mount],
         get_logs=True,
         in_cluster=True,
         service_account_name="airflow-sa",
+        is_delete_operator_pod=False,  # keep for debugging
     )
 
     cdc_register = KubernetesPodOperator(
