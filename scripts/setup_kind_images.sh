@@ -22,8 +22,11 @@ IMAGES=(
 
 echo "=== Pulling ${#IMAGES[@]} public images (linux/amd64) ==="
 for img in "${IMAGES[@]}"; do
+  if docker image inspect "$img" >/dev/null 2>&1; then
+    echo "  $img ... (cached)"
+    continue
+  fi
   echo "  $img ..."
-  docker rmi "$img" 2>/dev/null || true
   # retry up to 3 times for large images
   for i in 1 2 3; do
     docker pull --platform linux/amd64 "$img" && break || {
@@ -36,6 +39,12 @@ done
 echo ""
 echo "=== Loading into ${#NODES[@]} kind nodes ==="
 for img in "${IMAGES[@]}"; do
+  # Check first node — skip all if already loaded
+  # Image ref in containerd: docker.io/<namespace>/<name>:<tag> (library/ for official images)
+  if docker exec "${NODES[0]}" ctr -n k8s.io images ls -q 2>/dev/null | grep -qF "$img"; then
+    echo "  $img (already loaded)"
+    continue
+  fi
   echo "  $img"
   docker save "$img" \
     | docker exec -i "${NODES[0]}" ctr -n k8s.io images import - &

@@ -77,8 +77,22 @@ deploy:
                   --exclude='*.pyo' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
-                echo "=== Tagging custom images with :k8s alias ==="
+                echo "=== Loading & tagging custom images with :k8s alias ==="
                 for img in nyc-pipeline-tools nyc-dbt nyc-airflow nyc-superset; do
+                  # Check if image exists in any kind node
+                  found=false
+                  for node in kind-worker kind-worker2 kind-control-plane; do
+                    docker exec "$node" ctr -n k8s.io images ls -q "name~=docker.io/library/$img:" 2>/dev/null | grep -q . && found=true && break
+                  done
+                  # Fallback: load from local Docker if missing
+                  if ! $found && docker image inspect "$img:latest" >/dev/null 2>&1; then
+                    echo "  $img: loading :latest into kind nodes..."
+                    for node in kind-worker kind-worker2 kind-control-plane; do
+                      docker save "$img:latest" | docker exec -i "$node" ctr -n k8s.io images import - &
+                    done
+                    wait
+                  fi
+                  # Retag in all nodes
                   for node in kind-worker kind-worker2 kind-control-plane; do
                     sha_tag=$(docker exec "$node" ctr -n k8s.io images ls -q "name~=docker.io/library/$img:" 2>/dev/null | head -1 | sed 's/.*://')
                     if [ -n "$sha_tag" ]; then
