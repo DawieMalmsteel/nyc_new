@@ -59,7 +59,7 @@ Both enrich + validate with 10 rules, then write valid → `s3a://nyc-silver/tri
 | `docker/` | Dockerfiles + entrypoint scripts (`.sh` wrappers calling Python) |
 | `data/` | Data lake (gitignored): raw parquet, lookup CSV, Trino metastore DB files |
 | `docs/` | 14 Vietnamese markdown docs (architecture, deployment, Spark, dbt, Trino, Airflow, CDC, Superset, Docker, Helm/Skaffold, scripts, data flow) |
-| `k8s/` | Legacy raw K8s YAML — superseded by `charts/nyc-taxi/` |
+| `k8s/` | ⛔ DEPRECATED — frozen, stale, do not use. Superseded by `charts/nyc-taxi/`. See `k8s/README.md` for list of known breakage |
 | `sql/` | `analytics_questions.sql` (10 verification queries), `smoke_tests.sql` |
 | `reports/` | Data quality and verification reports |
 | `terraform/` | Terraform configs for MinIO bucket management |
@@ -178,6 +178,7 @@ K8s uses range 39080+:
 | `plan_export_golden_dataset.md` | Aspirational ~30 gold datasets plan (only 4 implemented in dbt gold) |
 | `check.md` | Quick reference: UI URLs, credentials, current row counts, bucket sizes |
 | `AGENTS.md` | This file |
+| `k8s/README.md` | Deprecation notice: why `k8s/` is stale vs Helm + list of known breakage |
 
 ## Runtime/Tooling Preferences
 
@@ -230,6 +231,6 @@ The `skaffold.yaml` pre-deploy hook handles common reinstall pain:
 3. Force-finalize if namespace stuck Terminating (raw `/api/v1/namespaces/.../finalize`)
 4. Release all PV claimRefs pointing at `nyc-taxi`
 5. `mkdir -p /mnt/nyc-project /mnt/nyc-data` on kind-worker
-6. `ctr image tag` for `:k8s` alias on all 4 images
+6. Load missing custom images from local Docker `:latest` into kind, then `ctr image tag` for `:k8s` alias on all 4 images
 7. `tar` sync project files to `/mnt/nyc-project`
 8. `tar` sync raw data to `/mnt/nyc-data`
