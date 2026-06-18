@@ -327,9 +327,11 @@ ORDER BY total_errors DESC""",
     GROUP BY pickup_date
 ),
 invalid AS (
-    SELECT pickup_date, SUM(error_count) AS invalid_trips
+    SELECT date(cast(pickup_year AS varchar) || '-' ||
+                lpad(cast(pickup_month AS varchar), 2, '0') || '-01') AS pickup_date,
+           SUM(error_count) AS invalid_trips
     FROM hive.mart.fact_invalid_trips
-    GROUP BY pickup_date
+    GROUP BY pickup_year, pickup_month
 )
 SELECT
   v.pickup_date,
