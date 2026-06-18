@@ -134,6 +134,24 @@ with DAG(
         service_account_name="airflow-sa",
     )
 
+    superset_saved_queries = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:k8s",
+        image_pull_policy="IfNotPresent",
+        name="superset-saved-queries",
+        task_id="superset_saved_queries",
+        cmds=["python3"],
+        arguments=["/opt/project/scripts/superset_saved_queries.py"],
+        env_vars=[
+            k8s.V1EnvVar(name="SUPERSET_URL", value="http://svc-superset:8088"),
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa",
+    )
+
     analytics_check = KubernetesPodOperator(
         namespace="nyc-taxi",
         image="nyc-pipeline-tools:k8s",
@@ -154,4 +172,4 @@ with DAG(
     )
 
     dbt_build >> gold_export
-    dbt_build >> materialize_postgres >> superset_bootstrap >> analytics_check
+    dbt_build >> materialize_postgres >> superset_bootstrap >> superset_saved_queries >> analytics_check

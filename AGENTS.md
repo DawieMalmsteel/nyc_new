@@ -172,6 +172,7 @@ K8s uses range 39080+:
 | `scripts/export_gold_to_minio.py` | CTAS ~30 gold datasets to `s3a://nyc-gold/`; defines `GOLD_DATASETS` |
 | `scripts/materialize_to_postgres.py` | Copy gold tables to Postgres analytics; imports `GOLD_DATASETS` |
 | `scripts/superset_bootstrap.py` | Superset DB + datasets + charts + dashboard (rebuilds `position_json`) |
+| `scripts/superset_saved_queries.py` | Registers 24 saved SQL Lab queries targeting Trino (idempotent) |
 | `airflow/dags/nyc_e2e_pipeline.py` | Monthly: spark → trino → dbt → gold+materialize → superset → analytics |
 | `airflow/dags/nyc_analytics_refresh.py` | Weekly: dbt → gold+materialize → superset → analytics |
 | `airflow/dags/nyc_cdc_pipeline.py` | Manual CDC: cdc_seed → cdc_register → cdc_bridge |
@@ -218,8 +219,8 @@ K8s uses range 39080+:
 
 ### Full Pipeline
 
-- `nyc_e2e_pipeline` DAG: 8 tasks (spark_batch, spark_streaming, trino_bootstrap, dbt_build, gold_export, materialize_postgres, superset_bootstrap, analytics_check).
-- `nyc_analytics_refresh` DAG: 5 tasks (dbt_build, gold_export, materialize_postgres, superset_bootstrap, analytics_check).
+- `nyc_e2e_pipeline` DAG: 9 tasks (spark_batch, spark_streaming, trino_bootstrap, dbt_build, gold_export, materialize_postgres, superset_bootstrap, superset_saved_queries, analytics_check).
+- `nyc_analytics_refresh` DAG: 6 tasks (dbt_build, gold_export, materialize_postgres, superset_bootstrap, superset_saved_queries, analytics_check).
 - `nyc_cdc_pipeline` DAG: 3 tasks (cdc_seed, cdc_register, cdc_bridge).
 - Trigger via Airflow UI or `airflow dags trigger` CLI.
 
