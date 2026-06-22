@@ -1,17 +1,14 @@
--- Mart: zone dimension (pickup + dropoff union of distinct zones seen in trips).
+-- Mart: zone dimension with SCD Type 2 structure.
+-- ponytail: view-only (Hive can't RENAME TABLE). Full SCD requires Postgres/Iceberg backend.
+-- Columns valid_from/valid_to/is_current ready — switch to materialized=table when on Postgres.
 {{ config(materialized='view') }}
 
-with zones as (
-  select pickup_zone as zone, pickup_borough as borough, pickup_service_zone as service_zone from {{ ref('stg_trips') }}
-  union
-  select dropoff_zone as zone, dropoff_borough as borough, dropoff_service_zone as service_zone from {{ ref('stg_trips') }}
-)
 select
-  row_number() over (order by zone) as zone_sk,
-  zone,
-  any_value(borough)    as borough,
-  any_value(service_zone) as service_zone
-from zones
-where zone is not null
-group by zone
-order by zone_sk
+    location_id as zone_id,
+    borough,
+    zone,
+    service_zone,
+    cast('2024-01-01' as date) as valid_from,
+    cast(null as date) as valid_to,
+    true as is_current
+from {{ ref('stg_zones') }}

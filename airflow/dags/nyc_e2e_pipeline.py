@@ -73,6 +73,7 @@ with DAG(
             "--lookup", "s3a://nyc-lookup/taxi_zone_lookup.csv",
             "--silver", "s3a://nyc-silver/trips",
             "--quarantine", "s3a://nyc-quarantine/invalid_trips",
+            "--incremental",
         ],
         env_vars=[
             k8s.V1EnvVar(name="MINIO_ENDPOINT", value="http://svc-minio:9000"),
@@ -341,4 +342,23 @@ with DAG(
     spark_streaming >> trino_bootstrap
     
     trino_bootstrap >> dbt_build >> gold_export
-    dbt_build >> materialize_postgres >> superset_bootstrap >> superset_saved_queries >> analytics_check
+    dbt_build >> materialize_postgres >> superset_bootstrap >> superset_saved_queries >> analytics_check >> anomaly_check
+
+    anomaly_check = KubernetesPodOperator(
+        namespace="nyc-taxi",
+        image="nyc-pipeline-tools:latest",
+        image_pull_policy="IfNotPresent",
+        name="anomaly-check",
+        task_id="anomaly_check",
+        cmds=["python3"],
+        arguments=["/opt/project/scripts/check_anomaly.py"],
+        env_vars=[
+            k8s.V1EnvVar(name="TRINO_HOST", value="svc-trino"),
+            k8s.V1EnvVar(name="TRINO_PORT", value="8080"),
+        ],
+        volumes=[project_volume],
+        volume_mounts=[project_volume_mount],
+        get_logs=True,
+        in_cluster=True,
+        service_account_name="airflow-sa",
+    )

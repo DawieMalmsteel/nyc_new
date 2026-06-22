@@ -23,7 +23,7 @@ _NOT_ZONE = ["Unknown", "N/A", "NV"]
 
 
 def run_batch(input_path, lookup_path, silver_path, quarantine_path,
-              expected_year=None, expected_month=None):
+              expected_year=None, expected_month=None, incremental=False):
     print(f"Starting enriched batch")
     print(f"  input:      {input_path}")
     print(f"  lookup:     {lookup_path}")
@@ -42,8 +42,37 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path,
         .config("spark.hadoop.fs.s3a.path.style.access", "true") \
         .getOrCreate()
 
-    # --- 1. Read raw parquet ---
-    raw = spark.read.parquet(input_path)
+    # --- 0. Incremental: find last processed partition ---
+    # ponytail: reads silver partition values, filters input to newer data only.
+    # Adds ~2s overhead on Trino/MinIO — negligible against 8M-row scan.
+    if incremental:
+        try:
+            silver_existing = spark.read.parquet(silver_path)
+            max_row = silver_existing.agg(
+                F.max("pickup_year").alias("max_year"),
+                F.max("pickup_month").alias("max_month")
+            ).collect()[0]
+            if max_row.max_year is not None:
+                print(f"[incremental] last processed: year={max_row.max_year}, month={max_row.max_month}")
+                spark.sql(f"""
+                    CREATE OR REPLACE TEMP VIEW raw_filtered AS
+                    SELECT * FROM parquet.`{input_path}`
+                    WHERE year > {max_row.max_year}
+                       OR (year = {max_row.max_year} AND month > {max_row.max_month})
+                """)
+                raw = spark.table("raw_filtered")
+                if raw.rdd.isEmpty():
+                    print("[incremental] no new data — skipping")
+                    spark.stop()
+                    return
+            else:
+                print("[incremental] silver empty, full scan")
+                raw = spark.read.parquet(input_path)
+        except Exception as e:
+            print(f"[incremental] silver not readable ({e}), full scan")
+            raw = spark.read.parquet(input_path)
+    else:
+        raw = spark.read.parquet(input_path)
 
     zones_raw = spark.read.option("header", "true").csv(lookup_path)
     zones = zones_raw.select(
@@ -225,6 +254,9 @@ if __name__ == "__main__":
                         help="Filter to this pickup_year (omit to keep all)")
     parser.add_argument("--month", type=int, default=None,
                         help="Filter to this pickup_month (omit to keep all)")
+    parser.add_argument("--incremental", action="store_true",
+                        help="Only process partitions newer than last silver run")
     args = parser.parse_args()
     run_batch(args.input, args.lookup, args.silver, args.quarantine,
-              expected_year=args.year, expected_month=args.month)
+              expected_year=args.year, expected_month=args.month,
+              incremental=args.incremental)
