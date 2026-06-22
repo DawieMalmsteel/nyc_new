@@ -1,24 +1,22 @@
 -- Mart: revenue and trip summary by payment type.
+-- ponytail: full outer with static payment_type list ensures all 6 types appear even with 0 rows.
 {{ config(materialized='view') }}
 
+with payment_types as (
+    select * from (values (1, 'Credit card'), (2, 'Cash'), (3, 'No charge'),
+                              (4, 'Dispute'), (5, 'Unknown'), (6, 'Voided')) as t(payment_type, payment_type_name)
+)
 select
-  payment_type,
-  case payment_type
-    when 1 then 'Credit card'
-    when 2 then 'Cash'
-    when 3 then 'No charge'
-    when 4 then 'Dispute'
-    when 5 then 'Unknown'
-    when 6 then 'Voided'
-    else 'Other'
-  end                                                         as payment_type_name,
-  count(*)                                                    as trip_count,
-  sum(total_amount)                                           as gross_revenue,
-  avg(total_amount)                                           as avg_revenue_per_trip,
-  sum(tip_amount)                                             as total_tip,
-  avg(tip_amount)                                             as avg_tip,
-  sum(fare_amount)                                            as total_fare,
-  avg(trip_distance)                                          as avg_distance
-from {{ ref('fact_trips') }}
-group by 1
+    pt.payment_type,
+    pt.payment_type_name,
+    coalesce(count(*), 0)                                      as trip_count,
+    coalesce(sum(t.total_amount), 0)                           as gross_revenue,
+    coalesce(avg(t.total_amount), 0)                           as avg_revenue_per_trip,
+    coalesce(sum(t.tip_amount), 0)                             as total_tip,
+    coalesce(avg(t.tip_amount), 0)                             as avg_tip,
+    coalesce(sum(t.fare_amount), 0)                            as total_fare,
+    coalesce(avg(t.trip_distance), 0)                          as avg_distance
+from payment_types pt
+left join {{ ref('fact_trips') }} t on pt.payment_type = t.payment_type
+group by pt.payment_type, pt.payment_type_name
 order by gross_revenue desc

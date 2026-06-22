@@ -755,29 +755,43 @@ GOLD_DATASETS = [
         "name": "dq_invalid_by_reason",
         "partitioned": False,
         "sql": """
-            SELECT
-                pickup_date,
-                'zero_distance' AS reason,
-                COUNT(*) AS count
-            FROM hive.mart.gold_fact_trips
-            WHERE trip_distance <= 0
-            GROUP BY pickup_date
+            SELECT pickup_date, reason, count FROM (
+                SELECT
+                    pickup_date,
+                    'zero_distance' AS reason,
+                    COUNT(*) AS count
+                FROM hive.mart.gold_fact_trips
+                WHERE trip_distance <= 0
+                GROUP BY pickup_date
+                UNION ALL
+                SELECT
+                    pickup_date,
+                    'negative_fare',
+                    COUNT(*)
+                FROM hive.mart.gold_fact_trips
+                WHERE fare_amount < 0
+                GROUP BY pickup_date
+                UNION ALL
+                SELECT
+                    pickup_date,
+                    'invalid_passengers',
+                    COUNT(*)
+                FROM hive.mart.gold_fact_trips
+                WHERE passenger_count < 1 OR passenger_count > 6
+                GROUP BY pickup_date
+            )
+            -- ponytail: fallback row so Superset doesn't show undefined when data is clean
             UNION ALL
             SELECT
-                pickup_date,
-                'negative_fare',
-                COUNT(*)
-            FROM hive.mart.gold_fact_trips
-            WHERE fare_amount < 0
-            GROUP BY pickup_date
-            UNION ALL
-            SELECT
-                pickup_date,
-                'invalid_passengers',
-                COUNT(*)
-            FROM hive.mart.gold_fact_trips
-            WHERE passenger_count < 1 OR passenger_count > 6
-            GROUP BY pickup_date
+                (SELECT min(pickup_date) FROM hive.mart.gold_fact_trips) AS pickup_date,
+                'no_issues' AS reason,
+                0 AS count
+            WHERE NOT EXISTS (
+                SELECT 1 FROM hive.mart.gold_fact_trips
+                WHERE trip_distance <= 0
+                   OR fare_amount < 0
+                   OR passenger_count < 1 OR passenger_count > 6
+            )
             ORDER BY pickup_date, reason
         """,
     },
