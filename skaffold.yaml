@@ -76,38 +76,19 @@ deploy:
                   --exclude='*.pyo' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
-                echo "=== Loading & tagging custom images with :k8s alias ==="
+                echo "=== Loading images (:latest tag) ==="
                 for img in nyc-pipeline-tools nyc-dbt nyc-airflow nyc-superset; do
-                  # Check if image exists in any kind node
-                  found=false
-                  for node in kind-worker kind-worker2 kind-control-plane; do
-                    docker exec "$node" ctr -n k8s.io images ls -q "name~=docker.io/library/$img:" 2>/dev/null | grep -q . && found=true && break
-                  done
-                  # Fallback: load from local Docker if missing
-                  if ! $found && docker image inspect "$img:latest" >/dev/null 2>&1; then
-                    echo "  $img: loading :latest into kind nodes..."
-                    for node in kind-worker kind-worker2 kind-control-plane; do
-                      docker save "$img:latest" | docker exec -i "$node" ctr -n k8s.io images import - &
-                    done
-                    wait
-                  fi
-                  # Retag in all nodes
-                  for node in kind-worker kind-worker2 kind-control-plane; do
-                    sha_tag=$(docker exec "$node" ctr -n k8s.io images ls -q "name~=docker.io/library/$img:" 2>/dev/null | head -1 | sed 's/.*://')
-                    if [ -n "$sha_tag" ]; then
-                      docker exec "$node" ctr -n k8s.io image tag \
-                        "docker.io/library/$img:$sha_tag" "docker.io/library/$img:k8s" 2>/dev/null && \
-                        echo "  $node: $img -> :k8s" || echo "  $node: $img :k8s FAIL"
-                    else
-                      echo "  $node: $img NOT FOUND"
-                    fi
-                  done
+                  kind load docker-image "$img:latest" --name kind 2>&1 | tail -1
                 done
                 echo "=== Syncing raw data to PVC ==="
+                # ponytail: pipefail off — tar warnings shouldn't block deploy, data persists on PVC
+                set +o pipefail
                 tar cf - -C data \
+                  --warning=no-file-changed \
                   --exclude='*.crc' \
                   nyc-raw/ nyc-lookup/ \
-                  | docker exec -i kind-worker tar xf - -C /mnt/nyc-data
+                  | docker exec -i kind-worker tar xf - -C /mnt/nyc-data || true
+                set -o pipefail
                 echo "=== Pre-deploy complete ==="
       after:
         - host:

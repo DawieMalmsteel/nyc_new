@@ -52,7 +52,7 @@ with DAG(
 
     dbt_build = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-dbt:k8s",
+        image="nyc-dbt:latest",
         image_pull_policy="IfNotPresent",
         name="dbt-build",
         task_id="dbt_build",
@@ -70,7 +70,7 @@ with DAG(
 
     gold_export = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="gold-export",
         task_id="gold_export",
@@ -89,7 +89,7 @@ with DAG(
 
     materialize_postgres = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="pg-materialize",
         task_id="materialize_postgres",
@@ -112,7 +112,7 @@ with DAG(
 
     superset_bootstrap = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="superset-bootstrap",
         task_id="superset_bootstrap",
@@ -136,7 +136,7 @@ with DAG(
 
     superset_saved_queries = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="superset-saved-queries",
         task_id="superset_saved_queries",
@@ -154,7 +154,7 @@ with DAG(
 
     analytics_check = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="analytics-check",
         task_id="analytics_check",

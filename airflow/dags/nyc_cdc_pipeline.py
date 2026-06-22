@@ -49,7 +49,7 @@ with DAG(
     # ─── 1. Seed Postgres ───────────────────────────────────────
     cdc_seed = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="cdc-seed",
         task_id="cdc_seed",
@@ -72,7 +72,7 @@ with DAG(
     # ─── 2. Register Debezium Connector ──────────────────────────
     cdc_register = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="cdc-register",
         task_id="cdc_register",
@@ -93,7 +93,7 @@ with DAG(
     # ─── 3. Bridge CDC → Kafka events ───────────────────────────
     cdc_bridge = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="cdc-bridge",
         task_id="cdc_bridge",

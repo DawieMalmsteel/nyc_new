@@ -11,7 +11,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: init
-        image: nyc-airflow:k8s
+        image: nyc-airflow
         imagePullPolicy: IfNotPresent
         command: ["bash", "/docker/entrypoint-airflow.sh"]
         env:

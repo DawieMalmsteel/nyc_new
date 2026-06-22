@@ -8,7 +8,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: init
-        image: nyc-pipeline-tools:k8s
+        image: nyc-pipeline-tools
         imagePullPolicy: IfNotPresent
         command:
         - "entrypoint-init-postgres"

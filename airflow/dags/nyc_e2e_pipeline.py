@@ -90,13 +90,13 @@ with DAG(
     # 1b. CDC: Seed Postgres (demo: 1000 rows) → Register Debezium → Bridge to Kafka
     cdc_seed = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="cdc-seed",
         task_id="cdc_seed",
         cmds=["entrypoint-cdc-seed"],
         arguments=[
-            "--input", "/mnt/nyc-data/data/nyc-raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet",
+            "--input", "/mnt/nyc-data/nyc-raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet",
             "--max-rows", "1000",
             "--dsn", "postgresql://postgres:postgres@svc-postgres-cdc:5432/nyc_taxi",
         ],
@@ -110,7 +110,7 @@ with DAG(
 
     cdc_register = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="cdc-register",
         task_id="cdc_register",
@@ -128,7 +128,7 @@ with DAG(
 
     cdc_bridge = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="cdc-bridge",
         task_id="cdc_bridge",
@@ -186,7 +186,7 @@ with DAG(
     # 3. Trino Bootstrap (K8s Native Operator)
     trino_bootstrap = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="trino-bootstrap",
         task_id="trino_bootstrap",
@@ -216,7 +216,7 @@ with DAG(
     # 4. dbt Build (K8s Native Operator)
     dbt_build = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-dbt:k8s",
+        image="nyc-dbt:latest",
         image_pull_policy="IfNotPresent",
         name="dbt-build",
         task_id="dbt_build",
@@ -235,7 +235,7 @@ with DAG(
     # 5. Gold Export
     gold_export = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="gold-export",
         task_id="gold_export",
@@ -255,7 +255,7 @@ with DAG(
     # 5b. Materialize gold tables into Postgres analytics DB
     materialize_postgres = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="pg-materialize",
         task_id="materialize_postgres",
@@ -279,7 +279,7 @@ with DAG(
     # 6. Superset Bootstrap
     superset_bootstrap = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="superset-bootstrap",
         task_id="superset_bootstrap",
@@ -299,7 +299,7 @@ with DAG(
     # 7. Superset Saved Queries
     superset_saved_queries = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="superset-saved-queries",
         task_id="superset_saved_queries",
@@ -318,7 +318,7 @@ with DAG(
     # 8. Analytics Check
     analytics_check = KubernetesPodOperator(
         namespace="nyc-taxi",
-        image="nyc-pipeline-tools:k8s",
+        image="nyc-pipeline-tools:latest",
         image_pull_policy="IfNotPresent",
         name="analytics-check",
         task_id="analytics_check",

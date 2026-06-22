@@ -29,7 +29,7 @@ spec:
           subPath: airflow/logs
       containers:
       - name: scheduler
-        image: nyc-airflow:k8s
+        image: nyc-airflow
         imagePullPolicy: IfNotPresent
         command: ["bash", "/docker/entrypoint-airflow.sh"]
         env:

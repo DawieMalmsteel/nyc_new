@@ -23,7 +23,7 @@ spec:
           value: local-dev-key-with-32-chars-min-1234
         - name: PYTHONPATH
           value: /app/docker
-        image: nyc-superset:k8s
+        image: nyc-superset
         imagePullPolicy: IfNotPresent
         name: superset
         ports:
