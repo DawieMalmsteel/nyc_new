@@ -6,6 +6,33 @@ models:
       - name: pickup_ts
         tests:
           - not_null
+      - name: dropoff_ts
+        tests:
+          - not_null
+      - name: trip_distance
+        tests:
+          - not_null
+      - name: fare_amount
+        tests:
+          - not_null
       - name: total_amount
+        tests:
+          - not_null
+      - name: passenger_count
+        tests:
+          - not_null
+      - name: payment_type
+        tests:
+          - not_null
+      - name: pickup_borough
+        tests:
+          - not_null
+      - name: dropoff_borough
+        tests:
+          - not_null
+      - name: pickup_location_id
+        tests:
+          - not_null
+      - name: dropoff_location_id
         tests:
           - not_null

@@ -18,3 +18,6 @@ models:
       - name: payment_type
         tests:
           - not_null
+      - name: passenger_count
+        tests:
+          - not_null
