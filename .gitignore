@@ -32,6 +32,7 @@ env/
 Thumbs.db
 
 # ── Docker volumes (local state) ──
+kind.yaml
 docker-compose.override.yml
 
 # ── Spark / Hadoop / Ivy ──

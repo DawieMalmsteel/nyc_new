@@ -37,22 +37,18 @@ for img in "${IMAGES[@]}"; do
 done
 
 echo ""
-echo "=== Loading into ${#NODES[@]} kind nodes ==="
+echo "=== Loading into kind cluster '$CLUSTER' ==="
+# ponytail: single docker save, tee to all nodes — avoids 3x save overhead
 for img in "${IMAGES[@]}"; do
-  # Check first node — skip all if already loaded
-  # Image ref in containerd: docker.io/<namespace>/<name>:<tag> (library/ for official images)
   if docker exec "${NODES[0]}" ctr -n k8s.io images ls -q 2>/dev/null | grep -qF "$img"; then
     echo "  $img (already loaded)"
     continue
   fi
   echo "  $img"
   docker save "$img" \
-    | docker exec -i "${NODES[0]}" ctr -n k8s.io images import - &
-  docker save "$img" \
-    | docker exec -i "${NODES[1]}" ctr -n k8s.io images import - &
-  docker save "$img" \
-    | docker exec -i "${NODES[2]}" ctr -n k8s.io images import - &
-  wait
+    | tee >(docker exec -i "${NODES[0]}" ctr -n k8s.io images import -) \
+          >(docker exec -i "${NODES[1]}" ctr -n k8s.io images import -) \
+    | docker exec -i "${NODES[2]}" ctr -n k8s.io images import -
 done
 
 echo ""

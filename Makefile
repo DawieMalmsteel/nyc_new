@@ -22,7 +22,10 @@ DOCKER_NETWORK ?= nyc_new_default
 .PHONY: k8s-cluster k8s-images k8s-deploy k8s-start k8s-up k8s-stop k8s-destroy
 .PHONY: k8s-ui k8s-ui-stop k8s-status k8s-logs k8s-verify
 .PHONY: kind-setup
-k8s-cluster:                    ## Create kind cluster (3 nodes)
+kind.yaml: kind.yaml.template
+	sed "s|\$${PWD}|$$(pwd)|g" kind.yaml.template > kind.yaml
+
+k8s-cluster: kind.yaml          ## Create kind cluster (3 nodes)
 	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
 
 k8s-images:                     ## Build & load custom images into kind
