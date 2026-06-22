@@ -44,7 +44,6 @@ deploy:
               - -c
               - |
                 set -euo pipefail
-                cd /home/dwcks/vsf_gsm/nyc_new
                 echo "=== Cleaning old release ==="
                 helm uninstall nyc-taxi -n nyc-taxi --ignore-not-found 2>/dev/null || true
                 echo "=== Cleaning namespace ==="
@@ -64,7 +63,7 @@ deploy:
                   fi
                 done
                 echo "=== Syncing project files to PVC ==="
-                docker exec kind-worker mkdir -p /mnt/nyc-project /mnt/nyc-data
+                docker exec kind-worker mkdir -p /mnt/nyc-project /mnt/nyc-project/airflow/logs /mnt/nyc-data
                 tar cf - \
                   --exclude='dbt/logs' \
                   --exclude='dbt/target' \
@@ -105,9 +104,9 @@ deploy:
                   done
                 done
                 echo "=== Syncing raw data to PVC ==="
-                tar cf - \
+                tar cf - -C data \
                   --exclude='*.crc' \
-                  data/nyc-raw/ data/nyc-lookup/ \
+                  nyc-raw/ nyc-lookup/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-data
                 echo "=== Pre-deploy complete ==="
       after:

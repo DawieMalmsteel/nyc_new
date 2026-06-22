@@ -23,15 +23,15 @@ nodes:
   labels:
     node-type: worker
   extraMounts:
-  - hostPath: /home/dwcks/vsf_gsm/nyc_new
+  - hostPath: /home/dwcks/Work/nyc_new
     containerPath: /mnt/nyc-project
-  - hostPath: /home/dwcks/vsf_gsm/nyc_new/data
+  - hostPath: /home/dwcks/Work/nyc_new/data
     containerPath: /mnt/nyc-data
 - role: worker
   labels:
     node-type: worker
   extraMounts:
-  - hostPath: /home/dwcks/vsf_gsm/nyc_new
+  - hostPath: /home/dwcks/Work/nyc_new
     containerPath: /mnt/nyc-project
-  - hostPath: /home/dwcks/vsf_gsm/nyc_new/data
+  - hostPath: /home/dwcks/Work/nyc_new/data
     containerPath: /mnt/nyc-data

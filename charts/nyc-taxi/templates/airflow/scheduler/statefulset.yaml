@@ -19,6 +19,14 @@ spec:
       dnsConfig:
         searches:
           - svc-airflow-scheduler.nyc-taxi.svc.cluster.local
+      initContainers:
+      - name: fix-log-perms
+        image: busybox:1.36
+        command: ['sh', '-c', 'mkdir -p /opt/airflow/logs/scheduler && chmod -R 777 /opt/airflow/logs']
+        volumeMounts:
+        - name: project-files
+          mountPath: /opt/airflow/logs
+          subPath: airflow/logs
       containers:
       - name: scheduler
         image: nyc-airflow:k8s
