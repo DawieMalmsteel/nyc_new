@@ -3,6 +3,7 @@ kind: Config
 build:
   local:
     push: false
+    concurrency: 2
   artifacts:
     - image: nyc-pipeline-tools
       context: .
@@ -57,11 +58,6 @@ deploy:
                   --exclude='*.pyc' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project || true
-                tar cf - -C data \
-                  --warning=no-file-changed \
-                  --exclude='*.crc' \
-                  nyc-raw/ nyc-lookup/ \
-                  | docker exec -i kind-worker tar xf - -C /mnt/nyc-data || true
                 echo "[skaffold] sync complete"
 portForward:
   - resourceType: service

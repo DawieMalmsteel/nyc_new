@@ -1,0 +1,16 @@
+# Docker build context — exclude everything not needed for image builds
+.git/
+.ivy2/
+data/
+dbt/logs/
+dbt/target/
+dbt/.user.yml
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+*.pyc
+*.pyo
+*.egg-info/
+.skaffold/
+reports/
+tmp/
