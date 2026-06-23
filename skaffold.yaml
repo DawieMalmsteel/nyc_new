@@ -58,6 +58,13 @@ deploy:
                   --exclude='*.pyc' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project || true
+                echo "[skaffold] syncing :latest images to kind nodes..."
+                for img in nyc-pipeline-tools nyc-dbt nyc-airflow nyc-superset; do
+                  docker save "$img:latest" 2>/dev/null \
+                    | tee >(docker exec -i kind-worker ctr -n k8s.io images import - 2>/dev/null) \
+                          >(docker exec -i kind-worker2 ctr -n k8s.io images import - 2>/dev/null) \
+                    | docker exec -i kind-control-plane ctr -n k8s.io images import - 2>/dev/null || true
+                done
                 echo "[skaffold] sync complete"
 portForward:
   - resourceType: service
