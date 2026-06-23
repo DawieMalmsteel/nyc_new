@@ -74,7 +74,7 @@ deploy:
                   --exclude='.pytest_cache' \
                   --exclude='*.pyc' \
                   --exclude='*.pyo' \
-                  airflow/dags/ jobs/ scripts/ dbt/ charts/ \
+                  airflow/dags/ jobs/ scripts/ dbt/ charts/ .ivy2/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
                 echo "=== Loading images (:latest tag) ==="
                 for img in nyc-pipeline-tools nyc-dbt nyc-airflow nyc-superset; do
