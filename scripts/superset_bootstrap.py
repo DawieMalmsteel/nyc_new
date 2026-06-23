@@ -27,6 +27,12 @@ GOLD_TABLES = [
     "ops_passenger_count_pattern", "ops_utilization_rate",
     "dq_validation_summary", "dq_invalid_by_reason", "dq_row_count_trend",
     "dq_batch_metadata",
+    # === New BI models (dbt gold) ===
+    "gold_customer_segments", "gold_customer_journey", "gold_payment_behavior",
+    "gold_tipping_culture", "gold_trip_unit_economics", "gold_zone_demand_heatmap",
+    "gold_vendor_battlecard", "gold_growth_metrics",
+    "gold_executive_daily", "gold_executive_weekly",
+    "gold_revenue_waterfall", "gold_hourly_pulse", "gold_risk_dashboard",
 ]
 
 

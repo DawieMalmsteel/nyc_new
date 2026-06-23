@@ -815,6 +815,18 @@ GOLD_DATASETS = [
                 CAST(30 AS INTEGER) AS dataset_count
         """,
     },
+    # === New BI models (from dbt) ===
+    {"name": "gold_customer_segments", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_customer_segments"},
+    {"name": "gold_tipping_culture", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_tipping_culture"},
+    {"name": "gold_trip_unit_economics", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_trip_unit_economics"},
+    {"name": "gold_vendor_battlecard", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_vendor_battlecard"},
+    {"name": "gold_executive_daily", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_executive_daily"},
+    {"name": "gold_executive_weekly", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_executive_weekly"},
+    {"name": "gold_revenue_waterfall", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_revenue_waterfall"},
+    {"name": "gold_growth_metrics", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_growth_metrics"},
+    {"name": "gold_hourly_pulse", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_hourly_pulse"},
+    {"name": "gold_risk_dashboard", "partitioned": False, "sql": "SELECT * FROM hive.mart.gold_risk_dashboard"},
+
 ]
 
 
