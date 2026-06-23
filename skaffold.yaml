@@ -78,10 +78,6 @@ deploy:
                   --exclude='*.pyo' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
-                echo "=== Loading images (:latest tag) ==="
-                for img in nyc-pipeline-tools nyc-dbt nyc-airflow nyc-superset; do
-                  kind load docker-image "$img:latest" --name kind 2>&1 | tail -1
-                done
                 echo "=== Syncing raw data to PVC ==="
                 # ponytail: pipefail off — tar warnings shouldn't block deploy, data persists on PVC
                 set +o pipefail
