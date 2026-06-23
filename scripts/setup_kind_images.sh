@@ -52,13 +52,10 @@ for img in "${IMAGES[@]}"; do
     continue
   fi
   echo "  $img"
-  kind load docker-image "$img" --name "$CLUSTER" 2>&1 || {
-    echo "    retrying with fallback..."
-    docker save "$img" \
-      | tee >(docker exec -i "${NODES[0]}" ctr -n k8s.io images import -) \
-            >(docker exec -i "${NODES[1]}" ctr -n k8s.io images import -) \
-      | docker exec -i "${NODES[2]}" ctr -n k8s.io images import -
-  }
+  docker save "$img" \
+    | tee >(docker exec -i "${NODES[0]}" ctr -n k8s.io images import -) \
+          >(docker exec -i "${NODES[1]}" ctr -n k8s.io images import -) \
+    | docker exec -i "${NODES[2]}" ctr -n k8s.io images import -
 done
 
 echo ""
