@@ -44,26 +44,8 @@ deploy:
               - -c
               - |
                 set -euo pipefail
-                echo "=== Cleaning old release ==="
-                helm uninstall nyc-taxi -n nyc-taxi --ignore-not-found 2>/dev/null || true
-                echo "=== Cleaning namespace ==="
-                kubectl delete ns nyc-taxi --force --grace-period=0 --ignore-not-found 2>/dev/null || true
-                sleep 2
-                # Force-finalize if namespace stuck Terminating
-                ns_json=$(kubectl get ns nyc-taxi -o json 2>/dev/null) || true
-                if [ -n "$ns_json" ]; then
-                  echo "$ns_json" | python3 -c "import json,sys; ns=json.load(sys.stdin); ns['spec']['finalizers']=[]; print(json.dumps(ns))" | kubectl replace --raw /api/v1/namespaces/nyc-taxi/finalize -f - 2>/dev/null || true
-                  sleep 1
-                fi
-                echo "=== Releasing PV claims ==="
-                for pv in $(kubectl get pv -o name 2>/dev/null); do
-                  claim_ns=$(kubectl get "$pv" -o jsonpath='{.spec.claimRef.namespace}' 2>/dev/null) || true
-                  if [ "$claim_ns" = "nyc-taxi" ]; then
-                    kubectl patch "$pv" --type json -p '[{"op":"remove","path":"/spec/claimRef"}]' 2>/dev/null || true
-                  fi
-                done
-                echo "=== Syncing project files to PVC ==="
-                docker exec kind-worker mkdir -p /mnt/nyc-project /mnt/nyc-project/airflow/logs /mnt/nyc-data
+                docker exec kind-worker mkdir -p /mnt/nyc-project/airflow/logs /mnt/nyc-data
+                echo "[skaffold] syncing code to PVC..."
                 tar cf - \
                   --warning=no-file-changed \
                   --exclude='dbt/logs' \
@@ -72,44 +54,15 @@ deploy:
                   --exclude='.git' \
                   --exclude='__pycache__' \
                   --exclude='.mypy_cache' \
-                  --exclude='.pytest_cache' \
                   --exclude='*.pyc' \
-                  --exclude='*.pyo' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-project || true
-                echo "=== Syncing raw data to PVC ==="
                 tar cf - -C data \
                   --warning=no-file-changed \
                   --exclude='*.crc' \
                   nyc-raw/ nyc-lookup/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-data || true
-                echo "=== Pre-deploy complete ==="
-      after:
-        - host:
-            command:
-              - bash
-              - -c
-              - |
-                echo ""
-                echo "==================== 🚀 PIPELINE UIs ===================="
-                echo "  Superset     http://localhost:39080    admin/admin"
-                echo "  MinIO API    http://localhost:39081    minio/minio123"
-                echo "  Kafka UI     http://localhost:39082"
-                echo "  Spark        http://localhost:39083"
-                echo "  Trino        http://localhost:39084"
-                echo "  Airflow      http://localhost:39085    admin/admin"
-                echo "  MinIO Admin  http://localhost:39086    minio/minio123"
-                echo "  Postgres CDC  localhost:39087          postgres/postgres"
-                echo "========================================================="
-                echo ""
-                # Try to open browsers (suppress errors on headless/WSL)
-                for url in \
-                  http://localhost:39085 \
-                  http://localhost:39080 \
-                  http://localhost:39082; do
-                  (xdg-open "$url" 2>/dev/null || true) &
-                done
-                wait
+                echo "[skaffold] sync complete"
 portForward:
   - resourceType: service
     resourceName: svc-superset
