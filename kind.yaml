@@ -1,6 +1,16 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: kind
+kubeadmConfigPatches:
+- |
+  apiVersion: kubeadm.k8s.io/v1beta3
+  kind: ClusterConfiguration
+  metadata:
+    name: config
+  apiServer:
+    extraArgs:
+      "max-requests-inflight": "1000"
+      "max-mutating-requests-inflight": "500"
 nodes:
 - role: control-plane
   extraPortMappings:
