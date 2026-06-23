@@ -7,15 +7,15 @@ data:
     coordinator=true
     http-server.http.port=8080
     discovery.uri=http://svc-trino:8080
-    query.max-memory-per-node=3GB
-    query.max-memory=5GB
-    query.max-concurrent-queries=2
+    query.max-memory-per-node=4GB
+    query.max-memory=6GB
+    query.max-concurrent-queries=1
   node.properties: |
     node.environment=production
     node.data-dir=/data/trino
     node.id=trino-01
   jvm.config: |
-    -Xmx5G
+    -Xmx6G
     -XX:+UseG1GC
   log.properties: |
     io.trino=INFO
