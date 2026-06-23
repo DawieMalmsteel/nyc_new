@@ -42,6 +42,21 @@ def run_batch(input_path, lookup_path, silver_path, quarantine_path,
         .config("spark.hadoop.fs.s3a.path.style.access", "true") \
         .getOrCreate()
 
+    # --- 0. Wait for MinIO ---
+    import time, urllib.request
+    minio_health = f"{endpoint}/minio/health/live"
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(minio_health, timeout=5)
+            print(f"[wait] MinIO ready")
+            break
+        except Exception:
+            print(f"[wait] MinIO not ready, retrying...")
+            time.sleep(3)
+    else:
+        print("[wait] MinIO not ready after 120s, proceeding anyway")
+
     # --- 0. Incremental: find last processed partition ---
     # ponytail: reads silver partition values, filters input to newer data only.
     # Adds ~2s overhead on Trino/MinIO — negligible against 8M-row scan.

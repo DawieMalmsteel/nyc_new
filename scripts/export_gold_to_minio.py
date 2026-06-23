@@ -799,20 +799,8 @@ GOLD_DATASETS = [
         "name": "dq_row_count_trend",
         "partitioned": False,
         "sql": """
-            SELECT
-                pickup_date,
-                COUNT(*) AS trip_count,
-                COUNT(*) - AVG(COUNT(*)) OVER (ORDER BY pickup_date ROWS BETWEEN 6 PRECEDING AND 1 PRECEDING) AS delta_from_7day_avg,
-                CASE
-                    WHEN COUNT(*) < 0.3 * AVG(COUNT(*)) OVER (ORDER BY pickup_date ROWS BETWEEN 6 PRECEDING AND 1 PRECEDING)
-                    THEN 'ANOMALY_LOW'
-                    WHEN COUNT(*) > 3.0 * AVG(COUNT(*)) OVER (ORDER BY pickup_date ROWS BETWEEN 6 PRECEDING AND 1 PRECEDING)
-                    THEN 'ANOMALY_HIGH'
-                    ELSE 'NORMAL'
-                END AS anomaly_flag
-            FROM hive.mart.gold_fact_trips
-            GROUP BY pickup_date
-            ORDER BY pickup_date
+            -- ponytail: SELECT * from dbt model — no duplicate CTAS
+            SELECT * FROM hive.mart.gold_dq_row_count_trend
         """,
     },
     {

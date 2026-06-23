@@ -126,15 +126,14 @@ def main() -> int:
                 f'"{col}" {TYPE_MAP.get(ttype.lower(), "TEXT")}'
                 for col, ttype in zip(col_names, trino_types)
             ]
-            # Drop + recreate in Postgres
-            pg_cur.execute(f'DROP TABLE IF EXISTS "{name}"')
-            pg_cur.execute(f'CREATE TABLE "{name}" ({", ".join(col_defs)})')
+            # Swap pattern: create _new, INSERT, drop old, rename
+            pg_cur.execute(f'DROP TABLE IF EXISTS "{name}_new"')
+            pg_cur.execute(f'CREATE TABLE "{name}_new" ({', '.join(col_defs)})')
 
             # Batch INSERT
             from psycopg2.extras import execute_values
-            placeholders = ", ".join(["%s"] * len(col_names))
             insert_sql = (
-                f'INSERT INTO "{name}" ({", ".join(f"{c}" for c in col_names)}) '
+                f'INSERT INTO "{name}_new" ({", ".join(f"{c}" for c in col_names)}) '
                 f"VALUES %s"
             )
 
@@ -151,6 +150,10 @@ def main() -> int:
             start = time.time()
             execute_values(pg_cur, insert_sql, safe_rows, page_size=5000)
             elapsed = time.time() - start
+
+            # Atomic swap: drop old, rename new
+            pg_cur.execute(f'DROP TABLE IF EXISTS "{name}"')
+            pg_cur.execute(f'ALTER TABLE "{name}_new" RENAME TO "{name}"')
 
             total_ok += 1
             print(f"[materialize] {name}: done ({len(rows)} rows, {elapsed:.1f}s)")
