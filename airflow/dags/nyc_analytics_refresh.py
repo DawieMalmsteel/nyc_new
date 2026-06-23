@@ -192,4 +192,5 @@ with DAG(
     )
 
     dbt_build >> gold_export
-    dbt_build >> materialize_postgres >> superset_bootstrap >> superset_saved_queries >> analytics_check >> anomaly_check
+    gold_export >> anomaly_check
+    dbt_build >> materialize_postgres >> superset_bootstrap >> superset_saved_queries >> analytics_check
