@@ -20,7 +20,7 @@ IMAGES=(
   confluentinc/cp-zookeeper:7.6.1
 )
 
-echo "=== Pulling ${#IMAGES[@]} public images (linux/amd64) ==="
+echo "=== Pulling ${#IMAGES[@]} public images ==="
 for img in "${IMAGES[@]}"; do
   if docker image inspect "$img" >/dev/null 2>&1; then
     echo "  $img ... (cached)"
@@ -29,7 +29,7 @@ for img in "${IMAGES[@]}"; do
   echo "  $img ..."
   # retry up to 3 times for large images
   for i in 1 2 3; do
-    docker pull --platform linux/amd64 "$img" && break || {
+    docker pull "$img" && break || {
       echo "    attempt $i failed, retrying..."
       sleep 2
     }
@@ -54,7 +54,10 @@ for img in "${IMAGES[@]}"; do
   echo "  $img"
   kind load docker-image "$img" --name "$CLUSTER" 2>&1 || {
     echo "    retrying with fallback..."
-    docker save "$img" | docker exec -i "${NODES[0]}" ctr -n k8s.io images import -
+    docker save "$img" \
+      | tee >(docker exec -i "${NODES[0]}" ctr -n k8s.io images import -) \
+            >(docker exec -i "${NODES[1]}" ctr -n k8s.io images import -) \
+      | docker exec -i "${NODES[2]}" ctr -n k8s.io images import -
   }
 done
 
