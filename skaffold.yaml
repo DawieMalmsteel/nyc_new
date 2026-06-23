@@ -63,7 +63,6 @@ deploy:
                   fi
                 done
                 echo "=== Syncing project files to PVC ==="
-                set +o pipefail
                 docker exec kind-worker mkdir -p /mnt/nyc-project /mnt/nyc-project/airflow/logs /mnt/nyc-data
                 tar cf - \
                   --warning=no-file-changed \
@@ -77,16 +76,13 @@ deploy:
                   --exclude='*.pyc' \
                   --exclude='*.pyo' \
                   airflow/dags/ jobs/ scripts/ dbt/ charts/ \
-                  | docker exec -i kind-worker tar xf - -C /mnt/nyc-project
+                  | docker exec -i kind-worker tar xf - -C /mnt/nyc-project || true
                 echo "=== Syncing raw data to PVC ==="
-                # ponytail: pipefail off — tar warnings shouldn't block deploy, data persists on PVC
-                set +o pipefail
                 tar cf - -C data \
                   --warning=no-file-changed \
                   --exclude='*.crc' \
                   nyc-raw/ nyc-lookup/ \
                   | docker exec -i kind-worker tar xf - -C /mnt/nyc-data || true
-                set -o pipefail
                 echo "=== Pre-deploy complete ==="
       after:
         - host:
@@ -94,7 +90,6 @@ deploy:
               - bash
               - -c
               - |
-                sleep 5
                 echo ""
                 echo "==================== 🚀 PIPELINE UIs ===================="
                 echo "  Superset     http://localhost:39080    admin/admin"
