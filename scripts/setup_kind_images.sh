@@ -38,9 +38,16 @@ done
 
 echo ""
 echo "=== Loading into kind cluster '$CLUSTER' ==="
-# ponytail: kind load docker-image is 2-3x faster than docker save + tee
+# ponytail: check ALL nodes (not just first) — avoids ImagePullBackOff
 for img in "${IMAGES[@]}"; do
-  if docker exec "${NODES[0]}" ctr -n k8s.io images ls -q 2>/dev/null | grep -qF "$img"; then
+  all_loaded=true
+  for node in "${NODES[@]}"; do
+    if ! docker exec "$node" ctr -n k8s.io images ls -q 2>/dev/null | grep -qF "$img"; then
+      all_loaded=false
+      break
+    fi
+  done
+  if $all_loaded; then
     echo "  $img (already loaded)"
     continue
   fi
