@@ -24,6 +24,14 @@ fi
 # --- load public images ---
 bash "${SCRIPT_DIR}/setup_kind_images.sh" "$CLUSTER"
 
+# --- sync .ivy2 cache to PVC (one-time, for Spark JARs offline) ---
+if [ -d "${REPO_ROOT}/.ivy2" ]; then
+  echo "=== Syncing .ivy2 cache to PVC ==="
+  docker exec kind-worker mkdir -p /mnt/nyc-project/.ivy2 2>/dev/null || true
+  tar cf - -C "${REPO_ROOT}" --warning=no-file-changed .ivy2/ \
+    | docker exec -i kind-worker tar xf - -C /mnt/nyc-project || true
+fi
+
 echo ""
 echo "=== Cluster ready. Next: ==="
 echo "  skaffold dev --namespace nyc-taxi"
