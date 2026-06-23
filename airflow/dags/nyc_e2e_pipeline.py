@@ -361,5 +361,5 @@ with DAG(
     spark_streaming >> trino_bootstrap
     
     trino_bootstrap >> dbt_build >> gold_export
-    gold_export >> anomaly_check
+    dbt_build >> anomaly_check
     dbt_build >> materialize_postgres >> superset_bootstrap >> superset_saved_queries >> analytics_check

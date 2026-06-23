@@ -17,7 +17,7 @@ def main() -> int:
 
     cur.execute("""
         SELECT pickup_date, trip_count, delta_from_7day_avg, anomaly_flag
-        FROM hive.nyc_gold.dq_row_count_trend
+        FROM hive.mart.gold_dq_row_count_trend
         WHERE anomaly_flag != 'NORMAL'
         ORDER BY pickup_date DESC
         LIMIT 10
@@ -36,7 +36,7 @@ def main() -> int:
         SELECT count(*) as total,
                count_if(anomaly_flag = 'ANOMALY_LOW') as low,
                count_if(anomaly_flag = 'ANOMALY_HIGH') as high
-        FROM hive.nyc_gold.dq_row_count_trend
+        FROM hive.mart.gold_dq_row_count_trend
     """)
     summary = cur.fetchone()
     print(f"[anomaly] Summary: total_days={summary[0]}, low={summary[1]}, high={summary[2]}")
