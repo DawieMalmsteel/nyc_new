@@ -172,9 +172,6 @@ with DAG(
         service_account_name="airflow-sa",
     )
 
-    dbt_build >> gold_export
-    dbt_build >> materialize_postgres >> superset_bootstrap >> superset_saved_queries >> analytics_check >> anomaly_check
-
     anomaly_check = KubernetesPodOperator(
         namespace="nyc-taxi",
         image="nyc-pipeline-tools:latest",
@@ -193,3 +190,6 @@ with DAG(
         in_cluster=True,
         service_account_name="airflow-sa",
     )
+
+    dbt_build >> gold_export
+    dbt_build >> materialize_postgres >> superset_bootstrap >> superset_saved_queries >> analytics_check >> anomaly_check
