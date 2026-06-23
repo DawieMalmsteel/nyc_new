@@ -128,7 +128,8 @@ def main() -> int:
             ]
             # Swap pattern: create _new, INSERT, drop old, rename
             pg_cur.execute(f'DROP TABLE IF EXISTS "{name}_new"')
-            pg_cur.execute(f'CREATE TABLE "{name}_new" ({', '.join(col_defs)})')
+            col_def_str = ', '.join(col_defs)
+            pg_cur.execute('CREATE TABLE "' + name + '_new" (' + col_def_str + ')')
 
             # Batch INSERT
             from psycopg2.extras import execute_values
