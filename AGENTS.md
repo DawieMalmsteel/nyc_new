@@ -73,7 +73,18 @@ Both enrich + validate with 10 rules, then write valid → `s3a://nyc-silver/tri
 skaffold dev --namespace nyc-taxi
 ```
 
-Skaffold pipeline: build → load images into kind → pre-deploy hooks (helm-uninstall, namespace reset, PV release, tar-sync project + data, retag images `:k8s`) → Helm install → file-sync watch → port-forwards.
+Skaffold pipeline: build → pre-deploy hook (tar-sync code to PVC, load `:latest` images to kind nodes) → Helm install/upgrade → port-forwards. Pre-deploy hook is **minimal** — no namespace clean, no data sync (handled by `scripts/cluster_up.sh`).
+
+```bash
+# First time setup (run once):
+bash scripts/cluster_up.sh          # kind cluster + public images + .ivy2 cache
+
+# Deploy:
+skaffold dev --namespace nyc-taxi   # builds images, syncs code, deploys, watches
+
+# Reset when cluster is in bad state:
+bash scripts/reset_ns.sh            # force-clean namespace + release PVs
+```
 
 - `kubectl get pods -n nyc-taxi` — check pod status
 - `kubectl logs -n nyc-taxi <pod>` — tail pod logs
@@ -129,13 +140,15 @@ K8s uses range 39080+:
 - Output partitioned by `pickup_year, pickup_month`.
 - `mode("append")` (never `overwrite`) to avoid data loss.
 - `spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version=2` for MinIO.
-- S3A packages: `org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262` on `spark-submit` CLI (not SparkSession config).
+- S3A JARs loaded via `--jars` (not `--packages`) in K8s to avoid Maven downloads (pod has no internet). JARs synced to PVC one-time by `cluster_up.sh`.
 - Ivy cache on PVC: `spark.jars.ivy=/opt/project/.ivy2`.
+- `wait_for_minio()` before reading data — polls `/minio/health/live` up to 120s.
+- `--incremental` flag: reads max(pickup_year, pickup_month) from silver, only processes newer partitions.
 
 ### dbt (SQL)
 
 - All models `materialized=view` (Hive HMS doesn't support `RENAME TABLE`).
-- Naming: `stg_` (staging), `dim_`/`fact_`/`mart_` (marts), `gold_` (gold layer).
+- Naming: `stg_` (staging), `dim_`/`fact_`/`mart_` (marts), `gold_` (gold layer — 14 BI models).
 - `nullif()` for cleaning N/A/Unknown/NV zone values: `nullif(nullif(col, 'N/A'), 'NV')`.
 - Models reference each other via `{{ ref('model_name') }}`.
 - dbt target: `dev` (Trino, views in `hive.mart`) or `postgres_analytics` (Postgres, gold models as tables).
@@ -152,16 +165,22 @@ K8s uses range 39080+:
 - Service naming: `svc-` prefix (e.g., `svc-trino`, `svc-postgres-analytics`).
 - Spark streaming task uses `svc-kafka:9092` (not `kafka:9092`) — K8s service DNS.
 - Airflow uses `KubernetesPodOperator` (not BashOperator). Pods mount `project-files-pvc` at `/opt/project`. SA: `airflow-sa`.
-- Skaffold image tags: pre-deploy hook retags `latest → :k8s` on all custom images (`nyc-pipeline-tools`, `nyc-dbt`, `nyc-airflow`, `nyc-superset`). DAG tasks and Helm templates reference `:k8s`.
-- Port-forwards need `--address 0.0.0.0`; use `setsid -f` for survival after `make` exit.
+- Skaffold pre-deploy hook: tar-sync code to PVC, load `:latest` images to all 3 kind nodes (docker save → tee → ctr import).
+- DAG tasks use `image: nyc-pipeline-tools:latest` with `imagePullPolicy: IfNotPresent`.
+- Port-forwards managed by Skaffold. If conflicts occur, kill old port-forwards: `pkill -f "port-forward"`.
 - If namespace stuck in `Terminating`: `kubectl delete namespace nyc-taxi --force --grace-period=0`.
 
 ## Important Files
 
 | File | Purpose |
 |---|---|
-| `kind.yaml` | 3-node kind cluster spec, NodePort 38080-38088, hostPath mounts |
-| `skaffold.yaml` | 4 image artifacts, Helm deploy, pre-deploy hooks, file-sync, port-forwards |
+| `kind.yaml.template` | kind cluster spec with `${PWD}` — generates `kind.yaml` on `cluster_up.sh`; includes kubeadmConfigPatches for API QPS |
+| `kind.yaml` | Generated per-machine (gitignored) |
+| `skaffold.yaml` | 4 image artifacts, Helm deploy, minimal pre-deploy hook, port-forwards |
+| `.dockerignore` | Excludes data/, .ivy2/, .git from build context |
+| `scripts/cluster_up.sh` | One-shot: generates kind.yaml + creates cluster + loads images + syncs .ivy2 |
+| `scripts/setup_kind_images.sh` | Pulls 10 public images + loads to all 3 kind nodes (checks skip, no `kind load`) |
+| `scripts/reset_ns.sh` | Force-clean namespace + release PVs when cluster is in bad state |
 | `docker-compose.yml` | 16+ services, 6 profiles |
 | `Makefile` | Compose-mode entry point (9 target groups) + K8s targets |
 | `dbt/dbt_project.yml` | dbt project config (views default, gold=table in postgres_analytics) |
@@ -176,7 +195,10 @@ K8s uses range 39080+:
 | `airflow/dags/nyc_e2e_pipeline.py` | Monthly: spark → trino → dbt → gold+materialize → superset → analytics |
 | `airflow/dags/nyc_analytics_refresh.py` | Weekly: dbt → gold+materialize → superset → analytics |
 | `airflow/dags/nyc_cdc_pipeline.py` | Manual CDC: cdc_seed → cdc_register → cdc_bridge |
-| `plan_export_golden_dataset.md` | Aspirational ~30 gold datasets plan (only 4 implemented in dbt gold) |
+| `plan.md` | Pipeline issues & fix plan — 4 items ranked by severity |
+| `plan_gold_layer.md` | Gold layer BI design — 20 dbt models across 3 stakeholders (Marketing/Sales/CEO) |
+| `plan_data_quality_audit.md` | Full audit of all 75 Trino+Postgres tables |
+| `plan_enhancement.md` | Pipeline enhancement plan (SCD, anomaly, incremental) |
 | `check.md` | Quick reference: UI URLs, credentials, current row counts, bucket sizes |
 | `AGENTS.md` | This file |
 | `k8s/README.md` | Deprecation notice: why `k8s/` is stale vs Helm + list of known breakage |
@@ -200,12 +222,10 @@ K8s uses range 39080+:
 
 ### dbt Tests (`dbt build`)
 
-- 15 models, 9 data tests, all `materialized=view` in dev.
+- 30 models (16 staging/marts + 14 gold BI), 24 data tests, all `materialized=view` in dev.
 - Generic tests: `not_null` on key columns in `dbt/tests/*.yml`.
-- Singular test: `dbt/tests/payment_type_range.sql` asserts `payment_type` in 1–6.
-- **24/24 PASS** expected on `dbt build`.
-- Coverage is thin — no `unique`/`accepted_values` tests, no freshness checks, no dbt-expectations or `dbt_utils` packages.
-- Note: `fact_invalid_trips_tests.yml` references `validation_error` column that doesn't exist by that name (model uses alias `err` after unnest) — may not bind correctly.
+- Singular tests: `payment_type_range`, `passenger_count_range`, `trip_distance_positive`, `total_not_less_than_fare`, `assert_minimum_rows`, `assert_recent_data`.
+- **54/54 PASS** expected on `dbt build` (30 models + 24 tests).
 
 ### Analytics Validation
 
@@ -219,19 +239,29 @@ K8s uses range 39080+:
 
 ### Full Pipeline
 
-- `nyc_e2e_pipeline` DAG: 9 tasks (spark_batch, spark_streaming, trino_bootstrap, dbt_build, gold_export, materialize_postgres, superset_bootstrap, superset_saved_queries, analytics_check).
-- `nyc_analytics_refresh` DAG: 6 tasks (dbt_build, gold_export, materialize_postgres, superset_bootstrap, superset_saved_queries, analytics_check).
+- `nyc_e2e_pipeline` DAG: 10 tasks (spark_batch, cdc_seed, cdc_register, cdc_bridge, spark_streaming, trino_bootstrap, dbt_build, gold_export, materialize_postgres, superset_bootstrap, superset_saved_queries, analytics_check, anomaly_check).
+- `nyc_analytics_refresh` DAG: 7 tasks (dbt_build, gold_export, materialize_postgres, superset_bootstrap, superset_saved_queries, analytics_check, anomaly_check).
 - `nyc_cdc_pipeline` DAG: 3 tasks (cdc_seed, cdc_register, cdc_bridge).
 - Trigger via Airflow UI or `airflow dags trigger` CLI.
 
-### Skaffold Pre-deploy Hook (idempotent reinstall)
+### Skaffold Pre-deploy Hook (minimal sync)
 
-The `skaffold.yaml` pre-deploy hook handles common reinstall pain:
-1. `helm uninstall nyc-taxi` (ignore-not-found)
-2. `kubectl delete ns nyc-taxi --force --grace-period=0`
-3. Force-finalize if namespace stuck Terminating (raw `/api/v1/namespaces/.../finalize`)
-4. Release all PV claimRefs pointing at `nyc-taxi`
-5. `mkdir -p /mnt/nyc-project /mnt/nyc-data` on kind-worker
-6. Load missing custom images from local Docker `:latest` into kind, then `ctr image tag` for `:k8s` alias on all 4 images
-7. `tar` sync project files to `/mnt/nyc-project`
-8. `tar` sync raw data to `/mnt/nyc-data`
+The `skaffold.yaml` pre-deploy hook is intentionally minimal — no namespace clean, no data sync:
+1. `mkdir -p /mnt/nyc-project /mnt/nyc-data` on kind-worker
+2. `tar` sync project files (airflow/dags/, jobs/, scripts/, dbt/, charts/) to PVC
+3. Load `:latest` custom images to all 3 kind nodes (docker save → tee → ctr import)
+
+For full reset: `bash scripts/reset_ns.sh`
+
+### Trino Configuration
+
+- Container limit: 10Gi, JVM `-Xmx6G` with G1GC
+- Query memory: 4GB per-node, 6GB cluster max, max 1 concurrent query
+- Hive connector: file-based metastore at `/opt/project/data/trino-metastore`
+- ⚠️ Known issue: **Trino OOMKilled** if too many CTAS queries run sequentially (gold_export with 40+ tables). Mitigation: reduced concurrency, increased memory. If OOM persists, split gold_export into batches or increase node resources.
+
+### MinIO
+
+- Credentials: `minio/minio123`
+- API: port 9000 (S3), Console: port 9001 (web UI)
+- ⚠️ Do NOT set `MINIO_BROWSER_REDIRECT_URL` — causes redirect loop on localhost
