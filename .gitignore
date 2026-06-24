@@ -88,3 +88,6 @@ tmp/
 dbt/target/
 data/data/
 dbt/target/
+
+# kind
+kind.yaml
