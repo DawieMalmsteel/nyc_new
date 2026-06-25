@@ -185,7 +185,7 @@ flowchart LR
     end
 
     BATCH["spark_batch"] --> V1 -->|PASS| TB["trino_bootstrap → ..."]
-    V1 -->|FAIL| BLOCK["⛔ BLOCK"]
+    V1 -->|FAIL| BLOCK["Send Mail or message in Team/Slack"]
 
     DBT["dbt_build"] --> GE["gold_export"] --> V2 -->|FAIL| BLOCK
     DBT --> MP["materialize"] --> V3 -->|PASS| SUP["superset"]
