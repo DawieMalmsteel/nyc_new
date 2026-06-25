@@ -774,7 +774,148 @@ Check:
 
 ---
 
-## 11. Implementation Priority
+## 11. Spark Streaming — Production Hardening
+
+### Vấn đề hiện tại
+
+| # | Vấn đề | Hậu quả |
+|---|---|---|
+| 1 | **Ghi chung path với batch** — `s3a://nyc-silver/trips` | Conflict, không biết row nào từ nguồn nào, không monitor riêng được |
+| 2 | **cdc_bridge group_id random** — mỗi lần chạy group mới | Đọc từ offset 0 → duplicate toàn bộ CDC event → duplicate silver |
+| 3 | **cdc_bridge không có idempotent producer** — retry → duplicate message | Network fail → Kafka có 2 message giống nhau → spark_streaming duplicate |
+| 4 | **`failOnDataLoss=false`** — nuốt lỗi âm thầm | Kafka message hết retention → spark bỏ qua → mất data không ai biết |
+| 5 | **`trigger=availableNow`** — chạy 1 lần rồi dừng | Không phải real-time, không catch-up được backlog dài |
+| 6 | **Không có DLQ** — poison pill giết cả stream | 1 message hỏng → cả batch foreachBatch fail → stream dừng |
+| 7 | **Checkpoint S3 — mất là chết** | Checkpoint corrupt/xóa → spark đọc lại từ `earliest` → duplicate toàn bộ |
+| 8 | **Delete event bị bỏ qua** — `after=null` trong Debezium | Row xóa trong Postgres → vẫn còn trong silver → data stale vĩnh viễn |
+
+### Thiết kế production
+
+#### 1. Tách path — batch riêng, stream riêng
+
+```
+nyc-silver/
+├── batch/trips/              ← spark_batch ghi
+│   pickup_year=2024/
+│       pickup_month=01/
+├── stream/trips/             ← spark_streaming ghi
+│   pickup_year=2024/
+│       pickup_month=01/
+└── checkpoints/
+    spark_stream_taxi_events/
+```
+
+#### 2. Merge ở dbt staging
+
+```sql
+-- dbt/models/staging/stg_trips.sql (concept)
+WITH batch AS (
+    SELECT *, 'batch' AS source_type FROM hive.nyc.batch_trips
+),
+stream AS (
+    SELECT *, 'stream' AS source_type FROM hive.nyc.stream_trips
+)
+SELECT * FROM batch
+UNION ALL
+SELECT * FROM stream
+```
+
+#### 3. Soft delete — không xóa, chỉ đánh dấu
+
+```sql
+-- Thêm cột is_deleted (BOOLEAN DEFAULT false)
+-- dbt model lọc:
+SELECT * FROM stg_trips WHERE is_deleted = false
+```
+
+#### 4. cdc_bridge sửa 3 thứ
+
+| Config | Cũ | Mới | Tại sao |
+|---|---|---|---|
+| `group_id` | `cdc-bridge-{random}` | `cdc-bridge-v1` | Giữ offset qua lần restart |
+| `enable_auto_commit` | `false` | `true` | Commit offset sau khi produce |
+| Producer config | Mặc định | `enable.idempotence=true, acks=all` | Chống duplicate message |
+| Delete event | Bỏ qua (`after=null`) | Produce tombstone `{"op": "d", ...}` | Không mất delete |
+
+#### 5. Spark streaming config mới
+
+| Config | Cũ | Mới | Tại sao |
+|---|---|---|---|
+| `failOnDataLoss` | `false` | `true` | Không nuốt lỗi — crash để alert |
+| `startingOffsets` | `earliest` | Checkpoint (auto) | Không re-process |
+| Trigger | `availableNow` | `processingTime="5min"` | Chạy liên tục, catch-up backlog |
+| Silver path | `nyc-silver/trips` | `nyc-silver/stream/trips` | Tách với batch |
+| Poisson pill | Crash stream | Try-catch trong `foreachBatch` → gửi vào `taxi.trip.events.dlq` → stream tiếp tục |
+
+### Kiến trúc CDC chain sau khi sửa
+
+```mermaid
+flowchart LR
+    PG["Postgres CDC<br/>WAL logical"] -->|"WAL read"| DZ["Debezium<br/>schema_only snapshot<br/>ExtractNewRecordState"]
+    DZ -->|"produce<br/>idempotent"| KAFKA["Kafka<br/>3 partitions<br/>retention 14d<br/>compaction"]
+    KAFKA -->|"consume<br/>group: spark-stream-v1"| BRIDGE["cdc_bridge<br/>group_id cố định<br/>enable_auto_commit"]
+    BRIDGE -->|"produce<br/>idempotent"| KAFKA2["Kafka<br/>taxi.trip.events<br/>+ DLQ topic"]
+    KAFKA2 -->|"consume<br/>failOnDataLoss=true<br/>trigger=5min"| SS["spark_streaming<br/>try-catch poison pill<br/>→ DLQ"]
+    SS -->|"append"| SILVER["nyc-silver/stream/trips<br/>tách riêng batch"]
+    KAFKA2 -.->|"poison pill"| DLQ["DLQ topic<br/>retention 30d"]
+
+    style PG fill:#48a,stroke:#333,color:#fff
+    style DZ fill:#c94,stroke:#333,color:#fff
+    style KAFKA fill:#694,stroke:#333,color:#fff
+    style KAFKA2 fill:#694,stroke:#333,color:#fff
+    style SS fill:#4a9,stroke:#333,color:#fff
+    style SILVER fill:#4a9,stroke:#333,color:#fff
+    style DLQ fill:#e44,stroke:#333,color:#fff
+```
+
+### Merge flowchart: batch + stream → 1 view
+
+```mermaid
+flowchart TD
+    BATCH_IN["nyc-silver/batch/trips<br/>(spark_batch)"] --> BATCH_TBL["Trino external table<br/>hive.nyc.batch_trips"]
+    STREAM_IN["nyc-silver/stream/trips<br/>(spark_streaming)"] --> STREAM_TBL["Trino external table<br/>hive.nyc.stream_trips"]
+    BATCH_TBL --> STG["dbt stg_trips<br/>UNION ALL<br/>+ is_deleted filter"]
+    STREAM_TBL --> STG
+    STG --> MART["dbt marts<br/>fact_trips, dim_zone, ..."]
+
+    style BATCH_IN fill:#4a9,stroke:#333,color:#fff
+    style STREAM_IN fill:#e94,stroke:#333,color:#fff
+    style STG fill:#49a,stroke:#333,color:#fff
+    style MART fill:#49a,stroke:#333,color:#fff
+```
+
+### Monitor CDC chain — ai check gì
+
+```
+Monitor DAG (@every 5min):
+
+check_pg_cdc:
+  → SELECT 1 FROM postgres-cdc
+  → WAL size: pg_current_wal_lsn()
+  → Replication slot: active?
+  → Fail → Slack + Email
+
+check_debezium:
+  → GET /connectors/nyc-cdc-connector/status
+  → status == RUNNING?
+  → MilliSecondsBehindSource < 300000?
+  → Fail → Slack + Email
+
+check_kafka:
+  → Consumer group spark-stream-v1 lag
+  → LAG < 1000?
+  → DLQ topic message count == 0?
+  → Fail → Slack + Email
+
+check_streaming:
+  → spark_streaming checkpoint OK?
+  → silver/stream/trips row count > 0?
+  → Fail → Slack + Email
+```
+
+---
+
+## 12. Implementation Priority
 
 ```mermaid
 gantt
