@@ -218,6 +218,351 @@ K8s uses range 39080+:
 - Skaffold v4beta3 with Helm deployer
 - kind (k8s in Docker) with 3 nodes
 
+## Data Quality Monitoring System (Design)
+
+### Problem Statement
+
+Pipeline has 13 nodes across 6 layers. Currently **11/13 nodes have no output monitoring** — data can be silently corrupted at any layer and propagate through the entire pipeline without detection until a human looks at a Superset chart.
+
+```
+LAYER                    NODE                   OUTPUT MONITORED?
+─────────────────────────────────────────────────────────────────
+Source                   cdc_seed               ❌ Mù
+                         cdc_register           ❌ Mù
+                         cdc_bridge             ❌ Mù
+                         spark_batch            ❌ Mù
+                         spark_streaming         ❌ Mù
+Catalog                  trino_bootstrap        ❌ Mù
+Transform                dbt_build              ✅ Một phần (not_null tests only)
+Export                   gold_export            ❌ Mù
+                         materialize_postgres   ❌ Mù
+Presentation             superset_bootstrap     ❌ Mù
+                         superset_saved_queries ❌ Mù
+Verification             analytics_check        ✅ Có check, nhưng không có quyền block
+                         anomaly_check          ✅ Có detect, nhưng không gửi alert
+```
+
+### Monitoring Architecture
+
+Three complementary layers — Quality Gates (inline), Monitor DAG (out-of-band), Output Contracts (source of truth):
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                     QUALITY GATE LAYER (inline, blocks pipeline)      │
+│                                                                      │
+│  spark_batch ──► verify_silver ──► trino_bootstrap ──► dbt_build     │
+│  spark_stream ──┘                    │                                │
+│                                      ├──► gold_export ──► verify_gold│
+│                                      └──► materialize ──► verify_pg  │
+│                                                              │        │
+│                                              superset_bootstrap      │
+│                                                     │                │
+│                                              verify_superset         │
+│                                                     │                │
+│                                              verify_freshness        │
+│                                                     │                │
+│                                              analytics_check         │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│              MONITOR DAG (out-of-band, @hourly, read-only)            │
+│                                                                      │
+│  DAG: nyc_pipeline_monitor                                           │
+│  ├── check_silver_health      → Trino: row count, null ratio         │
+│  ├── check_gold_health        → Trino: 30 tables exist, row count    │
+│  ├── check_postgres_health    → Postgres: row count matches gold     │
+│  ├── check_superset_health    → Superset API: chart renders OK       │
+│  ├── check_kafka_health       → Kafka: consumer group lag            │
+│  ├── check_minio_health       → MinIO: bucket size, object count     │
+│  └── report_health            → Aggregate → Slack/email if unhealthy │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│            OUTPUT CONTRACTS (YAML, source of truth per node)          │
+│                                                                      │
+│  contracts/silver.yaml     → spark_batch/spark_streaming output      │
+│  contracts/gold.yaml       → gold_export output (30 datasets)        │
+│  contracts/postgres.yaml   → materialize_postgres output             │
+│  contracts/superset.yaml   → superset_bootstrap output               │
+│  contracts/freshness.yaml  → global freshness SLA                    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Quality Gate Design (per node)
+
+Each gate is a self-contained verify task added to the existing DAG. It runs independently, queries the output of the upstream node, and **blocks downstream tasks on failure** (exit code 1).
+
+| Gate Task | Checks | Data Source | Blocks On Failure |
+|---|---|---|---|
+| `verify_silver` | Row count > 0, null ratio = 0 on required columns, AVG(trip_distance) in [1,20], MAX(pickup_date) freshness | Trino `hive.nyc.trips` | `trino_bootstrap` + all downstream |
+| `verify_gold` | All 30 tables exist, each has row count > 0, row count matches dbt source view | Trino `hive.nyc_gold.*` | None currently (gold has no downstream, but prevents silent failure) |
+| `verify_postgres` | Each table row count matches Trino gold counterpart, no zero-row tables | Postgres `nyc_analytics.public.*` vs Trino | `superset_bootstrap` |
+| `verify_superset` | Datasets load successfully, dashboard charts render (no "No data"), chart metrics consistent with Trino | Superset API + Trino | `superset_saved_queries` |
+| `verify_freshness` | `MAX(pickup_date)` ≤ 35 days stale, row count within 50% of 7-day average | Trino `hive.mart.fact_trips` | `analytics_check` |
+
+### Gate Exit Semantics
+
+```
+PASS (exit 0)  → downstream runs normally
+FAIL (exit 1)  → DAG task fails → Airflow retry 3x → if still fails → DAG marked failed + alert
+```
+
+Existing `analytics_check` and `anomaly_check` remain informational (exit 0 regardless) — they report, they don't block. Gates are the enforcement layer.
+
+### Monitor DAG Design
+
+Purpose: Continuous health monitoring **outside** pipeline execution. Catches degradation between scheduled pipeline runs (e.g., data growing too large for Trino, S3 bucket reaching capacity, Kafka consumer lag accumulating).
+
+- **Schedule:** `@hourly` (lightweight queries only)
+- **Access:** Read-only (no writes, no DDL)
+- **Alert channel:** Slack webhook + email for CRITICAL, Slack only for WARNING
+- **Idempotent:** Safe to run concurrently with main pipeline
+
+```python
+# Conceptual alert rules (not code)
+ALERTS = {
+    "silver_empty": {"severity": "CRITICAL", "condition": "row_count == 0"},
+    "silver_stale": {"severity": "CRITICAL", "condition": "max_date < now - 35d"},
+    "gold_missing_tables": {"severity": "CRITICAL", "condition": "any gold table row_count == 0"},
+    "postgres_drift": {"severity": "WARNING", "condition": "pg_row_count != gold_row_count"},
+    "superset_no_data": {"severity": "WARNING", "condition": "any chart returns 0 rows"},
+    "kafka_lag": {"severity": "WARNING", "condition": "consumer_lag > 1000"},
+    "minio_bucket_size_spike": {"severity": "WARNING", "condition": "bucket_size > 2x weekly_avg"},
+    "trino_memory": {"severity": "CRITICAL", "condition": "pod_restart_count > 3 in 1h"},
+    "airflow_scheduler_down": {"severity": "CRITICAL", "condition": "health_check fails 3x consecutive"},
+}
+```
+
+### Cross-Node Reconciliation
+
+Beyond individual gates, pipeline needs **pairwise reconciliation** between adjacent nodes:
+
+```
+row_count(spark_input) == row_count(silver) + row_count(quarantine)
+row_count(silver)       == row_count(mart.fact_trips)
+row_count(mart.*)       == row_count(gold_export.*)
+row_count(gold.*)       == row_count(postgres.*)
+```
+
+Each reconciliation is a separate verify task. If any pair mismatches → pipeline blocked at that boundary.
+
+### Failure Mode Coverage
+
+| Failure Scenario | Detected By | Time To Detect |
+|---|---|---|
+| MinIO bucket wrong name → Spark reads 0 rows | `verify_silver`: row_count == 0 → block | < 2 min after Spark completes |
+| Spark type cast bug → fare_amount all null | `verify_silver`: null ratio > 0 → block | < 2 min |
+| Spark crash + append → duplicate rows | `verify_silver`: row_count > expected → block | < 2 min |
+| Trino OOM → gold_export partial fail | `verify_gold`: missing tables → block | < 2 min |
+| materialize fail → Postgres empty table | `verify_postgres`: row_count mismatch → block | < 2 min |
+| Superset cache stale → shows old data | `verify_superset`: chart SQL vs Trino mismatch | < 2 min |
+| NYC TLC stops publishing → no new data | `verify_freshness`: max_date stale > 35d → block | < 2 min |
+| Kafka consumer lag → CDC data delayed | Monitor DAG `check_kafka_health` | < 1 hour |
+| S3 bucket approaching capacity | Monitor DAG `check_minio_health` | < 1 hour |
+
+### Implementation Path
+
+```
+Phase 1 (Tuần 1):   verify_silver + verify_freshness → chặn lỗi Spark và data stale
+Phase 2 (Tuần 2):   verify_postgres + verify_gold → chặn lỗi materialize và gold export
+Phase 3 (Tuần 3):   verify_superset + cross-node reconciliation → chặn lỗi UI và drift
+Phase 4 (Tuần 4):   Monitor DAG + alert pipeline (Slack/Email) → phát hiện ngoài pipeline run
+Phase 5 (Tuần 5+):  Output contracts YAML → source of truth, dễ review, dễ mở rộng
+```
+
+### Design Principles
+
+1. **Gates block, monitors report.** Gates run inline in the main DAG and stop downstream on failure. Monitor DAG runs out-of-band and alerts without blocking.
+2. **Each node owns its output contract.** The Spark team owns `contracts/silver.yaml`. The dbt team owns `contracts/gold.yaml`. No centralized gatekeeper bottleneck.
+3. **Reconciliation over validation.** Row count reconciliation catches more bugs than schema validation. Do both, but reconciliation first.
+4. **Alert on absence, not just error.** Missing data is as bad as corrupt data. Freshness checks are mandatory.
+5. **Contracts before code.** Write the YAML contract first (what "good" looks like), then implement the check. The contract is reviewable by business stakeholders, not just engineers.
+
+### Pipeline Health Dashboard (Design)
+
+A single Superset dashboard — the "Pipeline Control Room" — displays real-time health for every node in the pipeline. Each node gets its own row with status indicator (🟢🟡🔴), the metric being checked, the current value, the SLO threshold, and when it was last verified.
+
+#### Dashboard Layout
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  PIPELINE HEALTH — NYC Taxi E2E                            [12:34]  │
+│  Last DAG run: 2026-06-23 10:26  Status: FAILED                     │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌─ INGEST ─────────────────────────────────────────────────────┐  │
+│  │ 🟢 cdc_seed          rows=1000          PASS         23/06   │  │
+│  │ 🟢 cdc_register      connector=RUNNING  PASS         23/06   │  │
+│  │ 🟢 cdc_bridge        events=445/s       PASS         23/06   │  │
+│  │ 🟢 spark_batch       rows=8,480,375     PASS   ✓ 10M 23/06   │  │
+│  │ 🔴 spark_streaming   rows=0             FAIL   ✗ >0  23/06   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌─ CATALOG ────────────────────────────────────────────────────┐  │
+│  │ 🟢 trino_bootstrap   tables=3           PASS         23/06   │  │
+│  │ 🟢 trino_uptime      uptime=99.8%       PASS   ≥99%   live   │  │
+│  │ 🟢 minio_health      size=454MB         PASS         live   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌─ TRANSFORM ──────────────────────────────────────────────────┐  │
+│  │ 🟢 dbt_build         models=30/30       PASS         23/06   │  │
+│  │ 🟢 dbt_tests         pass=54/54         PASS   54/54 23/06   │  │
+│  │ 🟢 dbt_duration      time=3m12s         PASS   ≤5m   23/06   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌─ EXPORT ─────────────────────────────────────────────────────┐  │
+│  │ 🔴 gold_export       ok=0/30            FAIL   30/30 23/06   │  │
+│  │ 🔴 materialize       postgres rows=0    FAIL   ≠gold 23/06   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌─ PRESENTATION ───────────────────────────────────────────────┐  │
+│  │ 🔴 superset_health   charts=3/7         FAIL   7/7   23/06   │  │
+│  │ 🟠 superset_cache    staleness=12h      WARN   ≤1h   23/06   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌─ END-TO-END ─────────────────────────────────────────────────┐  │
+│  │ 🟢 freshness        max_date=2024-06-15 PASS   ≤35d  23/06   │  │
+│  │ 🟢 reconciliation   raw→silver=OK      PASS   ±1%   23/06   │  │
+│  │ 🟢 reconciliation   silver→gold=OK     PASS   ±1%   23/06   │  │
+│  │ 🔴 reconciliation   gold→postgres=FAIL FAIL   0%    23/06   │  │
+│  │ 🟢 anomaly_check     anomalies=0        PASS   ≤5%   23/06   │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  OVERALL: 🔴 4 FAILING  🟠 1 WARNING  🟢 14 PASSING               │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### Status Indicator Logic
+
+| Indicator | Meaning | Trigger | Action |
+|---|---|---|---|
+| 🟢 PASS | Metric trong ngưỡng | Giá trị hiện tại thỏa mãn SLO | Không |
+| 🟠 WARN | Metric gần ngưỡng | 70%-99% của ngưỡng (ví dụ: freshness 30d/35d) | Slack |
+| 🔴 FAIL | Metric vượt ngưỡng | Giá trị hiện tại vi phạm SLO | Slack + Email + Block downstream |
+| ⬛ STALE | Chưa được verify | Last check > 2x schedule interval | Slack |
+
+#### Data Sources for Each Row
+
+Each row in the dashboard pulls from a different source — no single point of failure for the dashboard itself:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     DASHBOARD DATA SOURCES                        │
+│                                                                   │
+│  spark_batch status    → Airflow API  (task_instance state)      │
+│  spark row count       → Trino       (hive.nyc.trips)            │
+│  dbt test pass rate    → dbt         (run_results.json)          │
+│  gold export status    → Airflow API + Trino (hive.nyc_gold.*)   │
+│  postgres row count    → Postgres    (nyc_analytics.public.*)    │
+│  superset health       → Superset API (charts render check)      │
+│  minio health          → MinIO API   (/minio/health/live)        │
+│  kafka health          → Kafka API   (consumer group lag)        │
+│  freshness             → Trino       (MAX(pickup_date))          │
+│  reconciliation        → Trino + Postgres (row count diff)       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### How It Refreshes
+
+Dashboard data is populated by a lightweight script (`scripts/generate_health_report.py`) that runs every 5 minutes via the Monitor DAG. The script:
+
+1. Queries every data source in parallel (Airflow API, Trino, Postgres, MinIO, Kafka, Superset)
+2. Compares each metric to its SLO threshold
+3. Writes a JSON health report to a Postgres table `pipeline_health.checks`
+4. Superset dashboard queries this table directly (single source, fast refresh)
+
+```
+┌──────────┐    ┌─────────────────┐    ┌──────────────┐    ┌──────────┐
+│ Sources  │    │ health_report.py │    │  Postgres    │    │ Superset │
+│ Airflow   │───►│ (runs @5min)     │───►│ pipeline_    │───►│ Dashboard│
+│ Trino     │    │ compare→PASS/FAIL│    │ health.checks│    │ renders  │
+│ Postgres  │    │                  │    │              │    │ 🟢🟠🔴   │
+│ MinIO     │    └─────────────────┘    └──────────────┘    └──────────┘
+│ Kafka     │
+│ Superset  │
+└──────────┘
+```
+
+#### Health Report Table Schema
+
+```sql
+-- Postgres table: pipeline_health.checks
+-- One row per check, upserted every 5 minutes
+CREATE TABLE pipeline_health.checks (
+    check_id        TEXT PRIMARY KEY,       -- e.g. 'spark_batch.row_count'
+    layer           TEXT,                   -- 'ingest', 'catalog', 'transform', 'export', 'presentation', 'e2e'
+    node            TEXT,                   -- 'spark_batch', 'dbt_build', 'gold_export', ...
+    metric          TEXT,                   -- 'row_count', 'status', 'freshness', ...
+    current_value   TEXT,                   -- '8,480,375'
+    expected_slo    TEXT,                   -- '> 0'
+    status          TEXT,                   -- 'PASS', 'WARN', 'FAIL', 'STALE'
+    checked_at      TIMESTAMPTZ,            -- last verification time
+    error_message   TEXT                    -- NULL if PASS, error detail if FAIL
+);
+```
+
+#### Per-Node SLO Reference
+
+| Node | Metric | SLO | Criticality |
+|---|---|---|---|
+| `cdc_seed` | rows_inserted | = 1000 | 🟢 Low |
+| `cdc_register` | connector_status | = 'RUNNING' | 🟢 Low |
+| `cdc_bridge` | events_per_second | > 0 | 🟢 Low |
+| `spark_batch` | silver_row_count | > 1,000,000 | 🔴 Critical |
+| `spark_batch` | quarantine_ratio | ≤ 15% | 🟠 Warning |
+| `spark_batch` | null_ratio_fare_amount | = 0% | 🔴 Critical |
+| `spark_streaming` | silver_row_count | > 0 | 🟠 Warning |
+| `trino_bootstrap` | tables_registered | = 3 | 🔴 Critical |
+| `trino_uptime` | pod_ready | = true | 🔴 Critical |
+| `minio_health` | health_endpoint | = 200 | 🔴 Critical |
+| `minio_health` | bucket_size_bytes | < 10GB | 🟠 Warning |
+| `dbt_build` | models_built | = 30 | 🔴 Critical |
+| `dbt_build` | tests_passed | = 54 | 🔴 Critical |
+| `dbt_build` | duration_seconds | ≤ 300 | 🟠 Warning |
+| `gold_export` | tables_ok | = 30 | 🔴 Critical |
+| `gold_export` | total_rows | matches mart.* | 🔴 Critical |
+| `materialize_postgres` | pg_row_count | = gold_row_count (all tables) | 🔴 Critical |
+| `superset_bootstrap` | datasets_ready | = 7 | 🟠 Warning |
+| `superset_health` | charts_rendering | = 7/7 | 🟠 Warning |
+| `superset_cache` | cache_age_minutes | ≤ 60 | 🟠 Warning |
+| `freshness` | max_pickup_date_age_days | ≤ 35 | 🔴 Critical |
+| `reconciliation_01` | raw_rows − (silver + quarantine) | = 0 | 🔴 Critical |
+| `reconciliation_02` | silver − mart.fact_trips | = 0 | 🔴 Critical |
+| `reconciliation_03` | mart.* − gold.* | = 0 | 🔴 Critical |
+| `reconciliation_04` | gold.* − postgres.* | = 0 | 🔴 Critical |
+| `anomaly_check` | anomaly_days_ratio | ≤ 5% | 🟠 Warning |
+| `kafka_health` | consumer_lag | < 1000 | 🟠 Warning |
+| `airflow_scheduler` | scheduler_healthy | = true | 🔴 Critical |
+
+### Pipeline Health SLOs
+
+Seven pillars define whether the pipeline is "healthy". All SLOs are checked by the Monitor DAG and displayed on the Pipeline Health Dashboard.
+
+| Pillar | Key Metric | SLO Threshold | Criticality |
+|---|---|---|---|
+| **Freshness** | `MAX(pickup_date)` staleness | ≤ 35 days | 🔴 |
+| | Raw source availability | New partition within 45 days | 🔴 |
+| **Completeness** | Silver row count | > 0 AND within ±20% of prior run | 🔴 |
+| | Gold table count | 30/30 tables exported | 🔴 |
+| | Postgres ↔ Gold row count | 0% mismatch | 🔴 |
+| **Correctness** | dbt test pass rate | 54/54 (100%) | 🔴 |
+| | Null ratio on required columns | 0% | 🔴 |
+| | Distribution sanity vs 3-month avg | ≤ 50% variance | 🟠 |
+| | Business assertion (revenue sum) | ≤ 1% mismatch | 🔴 |
+| **Volume** | Daily trip count | 50%–200% of 7-day rolling avg | 🟠 |
+| | Silver storage growth | ≤ 500MB/month | 🟠 |
+| **Latency** | Total DAG duration | ≤ 45 minutes | 🟠 |
+| | Spark batch duration | ≤ 20 minutes | 🟠 |
+| | gold_export duration | ≤ 10 minutes | 🟠 |
+| **Availability** | DAG success rate (30-day) | ≥ 95% | 🔴 |
+| | Trino uptime | ≥ 99% | 🔴 |
+| | MinIO uptime | ≥ 99% | 🔴 |
+| **Schema** | Column count hive.nyc.trips | = 25 | 🟠 |
+| | Partition count | Increases +1 per month | 🟠 |
+
+When any 🔴 SLO fails → pipeline blocked + immediate Slack + email. When any 🟠 SLO fails → Slack notification only.
+
 ## Testing & QA
 
 ### dbt Tests (`dbt build`)
