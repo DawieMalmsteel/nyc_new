@@ -463,42 +463,8 @@ flowchart TD
 | Postgres (CDC + Analytics) | 2 |
 | Debezium + Kafka | 2 |
 | MinIO | 1 |
-| Spark (master + worker) | 2 |
+| Spark (master + 2 worker) | 3 |
 | Trino | 1 |
 | Superset | 1 |
 
 ---
-
-## Slide 13: Lộ trình
-
-```mermaid
-%%{init: {'theme': 'default', 'themeVariables': {'background': '#ffffff'}}}%%
-gantt
-    title Production Hardening — 10 tuần
-    dateFormat  YYYY-MM-DD
-    axisFormat  Tuần %W
-
-    section Phase 1 — Nền tảng
-    Intake validation + Quality gates     :p1, 2026-07-01, 2w
-
-    section Phase 2 — Giám sát
-    Monitor DAG + Alert pipeline          :p2, after p1, 2w
-
-    section Phase 3 — CDC Chain
-    Postgres · Debezium · Kafka · Stream  :p3, after p2, 2w
-
-    section Phase 4 — Query & Transform
-    Trino + dbt + Superset                :p4, after p3, 2w
-
-    section Phase 5 — Hoàn thiện
-    Anomaly + Dashboard + Contracts       :p5, after p4, 2w
-```
-
-| Phase | Nội dung | Thời gian |
-|---|---|---|
-| 1 | Intake validation, 5 quality gates | 2 tuần |
-| 2 | Monitor DAG, 10 checks, Slack + Email | 2 tuần |
-| 3 | CDC chain hardening (4 components) | 2 tuần |
-| 4 | Trino resource groups, dbt CI, Superset | 2 tuần |
-| 5 | Anomaly check, health dashboard, contracts | 2 tuần |
-| **Tổng** | | **10 tuần** |
