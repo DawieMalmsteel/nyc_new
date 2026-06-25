@@ -28,6 +28,7 @@ flowchart LR
 ```
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 2: Bài toán
 
@@ -46,6 +47,7 @@ flowchart LR
 | **📊 Superset Dashboard** | PostgreSQL → 4 charts | Marketing, Sales, CEO | Quyết định kinh doanh |
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 3: Kiến trúc — 2 luồng song song
 
@@ -94,6 +96,7 @@ flowchart LR
 **2 luồng độc lập:** MAIN chạy pipeline chính (monthly). MONITOR chạy song song (5 phút/lần), chỉ SELECT không ghi, phát hiện lỗi → Slack + Email. Monitor fail không ảnh hưởng MAIN.
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 4: Pipeline — 13 nodes
 
@@ -166,6 +169,7 @@ flowchart TD
 | pickup/dropoff zone tồn tại | Loại location ID ảo |
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 5: Quality Gates — tự động kiểm tra sau mỗi node
 
@@ -202,6 +206,7 @@ spark_input == silver + quarantine  →  silver == mart.fact_trips  →  mart ==
 4 cặp đối chiếu. Sai bất kỳ cặp nào → block pipeline ngay. Đảm bảo không mất data giữa các tầng.
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 6: Monitor DAG — 10 checks, phát hiện trong 5 phút
 
@@ -221,6 +226,7 @@ spark_input == silver + quarantine  →  silver == mart.fact_trips  →  mart ==
 Tất cả check → Slack + Email. Không cần đợi pipeline chạy mới biết hệ thống có vấn đề.
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 7: CDC Chain — Postgres → Debezium → Kafka → Spark Streaming
 
@@ -246,6 +252,7 @@ flowchart LR
 | HA | RDS Multi-AZ (production) | Auto failover |
 
 ---
+
 
 ### Debezium
 
@@ -332,6 +339,7 @@ flowchart LR
 | Poison pill | Try-catch → DLQ | 1 message hỏng không chết cả stream |
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 8: Pre-ingest Validation — chặn file hỏng trước Spark
 
@@ -362,6 +370,7 @@ s3://nyc-raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet
 ```
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 9: Trino — Resource Groups + Batch CTAS
 
@@ -375,6 +384,7 @@ s3://nyc-raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet
 | **Query monitoring** | `system.runtime.queries` → alert FAILED/BLOCKED | Biết query nào gây OOM |
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 10: dbt + Superset + Anomaly
 
@@ -406,6 +416,7 @@ s3://nyc-raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet
 | **Baseline tự học** | 30-day rolling ± 3σ |
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 11: Spark Scalability + Crash Recovery
 
@@ -438,6 +449,7 @@ flowchart TD
 **Crash recovery:** Spark ghi vào thư mục tạm `_tmp/` → ghi xong mới move vào thư mục chính. Crash không ảnh hưởng data cũ.
 
 ---
+<div style="page-break-after: always;"></div>
 
 ## Slide 12: Hiện trạng
 
