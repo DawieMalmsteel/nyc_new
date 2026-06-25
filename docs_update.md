@@ -915,7 +915,483 @@ check_streaming:
 
 ---
 
-## 12. Implementation Priority
+## 12. MinIO — Intake Validation
+
+### Hiện trạng
+
+Spark đọc trực tiếp từ `s3a://nyc-raw/yellow_taxi/year=*/month=*/*.parquet`. Không có validation trước khi đọc. File sai → Spark crash → cả batch chết.
+
+### Vấn đề
+
+| # | Vấn đề | Hậu quả |
+|---|---|---|
+| 1 | **File sai schema** (thiếu cột, sai kiểu dữ liệu, không phải Parquet) → Spark crash | 1 file hỏng → cả batch chết. Retry 3 lần vẫn chết vì không fix được file |
+| 2 | **File sai tên/bị đặt sai chỗ** → glob không quét được | File bị bỏ qua âm thầm → data thiếu, không ai biết |
+| 3 | **Upload lại file đã xử lý** → không phân biệt cũ/mới | Duplicate trong silver, incremental không phát hiện vì MAX(pickup_month) không đổi |
+
+### Thiết kế — Pre-ingest validation
+
+1 script `validate_raw_files.py` chạy **trước spark_batch**, kiểm tra từng file mới trong raw bucket. Chỉ 1 rule: file PHẢI theo chuẩn.
+
+```python
+# scripts/validate_raw_files.py (concept)
+# Chạy trước spark_batch — nếu fail → block spark
+
+for each new file in s3://nyc-raw/yellow_taxi/:
+    
+    # ── LEVEL 1: PATH & FORMAT ──
+    if not path.match("year=*/month=*/"):
+        → move to _quarantine/ + Slack: "File sai partition path"
+    if not file.endswith(".parquet"):
+        → move to _quarantine/ + Slack: "File không phải Parquet"
+    if file.size == 0:
+        → move to _quarantine/ + Slack: "File rỗng 0 bytes"
+    
+    # ── LEVEL 2: SCHEMA ──
+    # Kiểm tra parquet magic bytes (PAR1) → file corrupt
+    # Đọc schema → check đủ 19 cột bắt buộc
+    required_cols = {
+        "VendorID", "tpep_pickup_datetime", "tpep_dropoff_datetime",
+        "passenger_count", "trip_distance", "RatecodeID", "PULocationID",
+        "DOLocationID", "payment_type", "fare_amount", "extra", "mta_tax",
+        "tip_amount", "tolls_amount", "improvement_surcharge", "total_amount"
+    }
+    if not required_cols.issubset(parquet_schema.columns):
+        → move to _quarantine/ + Slack: f"Thiếu cột: {missing}"
+    
+    # ── LEVEL 3: DUPLICATE CHECK ──
+    if file.etag in state_file["processed"]:
+        → skip + log: "File đã xử lý"
+    
+    # PASS → keep in raw + add to state_file
+```
+
+### Flow
+
+```mermaid
+flowchart TD
+    RAW["s3://nyc-raw/<br/>new files uploaded"] --> VAL["validate_raw_files.py<br/>(pre-spark_batch)"]
+    VAL -->|"PASS"| SPARK["spark_batch<br/>đọc OK"]
+    VAL -->|"FAIL"| QUAR["_quarantine/<br/>+ Slack alert"]
+    VAL -->|"DUPLICATE"| SKIP["Bỏ qua + log"]
+    
+    SPARK --> SILVER["nyc-silver"]
+    
+    style VAL fill:#e94,stroke:#333,color:#fff
+    style QUAR fill:#c00,stroke:#333,color:#fff
+    style SPARK fill:#4a9,stroke:#333,color:#fff
+```
+
+### DAG integration
+
+```
+validate_raw_files → spark_batch → verify_silver → ...
+```
+
+Nếu validate fail (có file trong quarantine) → vẫn cho spark_batch chạy (file hỏng đã được move ra khỏi raw). Slack alert để người xem file hỏng.
+
+### Định dạng bắt buộc
+
+```
+ĐÚNG:   s3://nyc-raw/yellow_taxi/year=2024/month=01/yellow_tripdata_2024-01.parquet
+SAI:    s3://nyc-raw/yellow_taxi/2024/01/file.parquet         (thiếu year=/month=)
+SAI:    s3://nyc-raw/yellow_taxi/year=2024/month=01/file.csv  (sai đuôi)
+SAI:    s3://nyc-raw/yellow_taxi/year=2024/file.parquet       (thiếu month=)
+SAI:    s3://nyc-raw/yellow_taxi/data.parquet                 (không partition)
+```
+
+File không đúng → `_quarantine/` + Slack. Không hỗ trợ daily/weekly/yearly/flat.
+
+---
+
+## 13. Trino — Production Hardening
+
+### Hiện trạng
+
+```yaml
+# Container: trino:435
+# JVM: -Xmx6G, G1GC
+# max_concurrent_queries: 1
+# Metastore: file-based (/opt/project/data/trino-metastore)
+```
+
+### Vấn đề
+
+| # | Vấn đề | Hậu quả |
+|---|---|---|
+| 1 | **OOM khi gold_export chạy 30 CTAS liên tiếp** — query memory không kịp giải phóng | 28/30 xong, bảng 29 OOMKilled → pod restart → retry từ đầu → fail loop |
+| 2 | **max 1 concurrent query** — 1 query nặng chiếm hết | dbt, gold_export, Superset, materialize tất cả phải xếp hàng → DAG timeout |
+| 3 | **File-based metastore** — corrupt là mất hết | PVC die → mất toàn bộ catalog → phải tạo lại từ `trino_register.py` |
+| 4 | **Partition không tự sync** — phải chạy `sync_partition_metadata` thủ công | Spark ghi partition mới → Trino không thấy → query thiếu data |
+| 5 | **Single node — không HA** | Pod chết → không ai query được → Superset trắng, dbt không build |
+| 6 | **Không query monitoring** — không biết query nào nặng | OOM xảy ra không biết query nào gây ra, không audit được |
+
+### Thiết kế production
+
+#### 1. Chống OOM + tăng concurrency
+
+```properties
+# config.properties
+query.max-memory=8GB               # Tăng từ 4GB
+query.max-memory-per-node=4GB      # 4GB/query
+query.max-total-memory=12GB        # Tổng cluster (nếu multi-node)
+query.max-concurrent-queries=5     # Tăng từ 1 → 5
+
+# Resource group — giới hạn riêng cho gold_export
+resource-groups.configuration-manager=file
+resource-groups.config-file=etc/resource-groups.json
+```
+
+```json
+// resource-groups.json
+{
+  "rootGroups": [
+    {
+      "name": "gold_export",
+      "softMemoryLimit": "3GB",
+      "maxQueued": 3,
+      "hardConcurrencyLimit": 2,    // Tối đa 2 CTAS cùng lúc
+      "schedulingPolicy": "weighted_fair"
+    },
+    {
+      "name": "adhoc",
+      "softMemoryLimit": "2GB",
+      "maxQueued": 10,
+      "hardConcurrencyLimit": 3     // dbt + superset + materialize
+    }
+  ]
+}
+```
+
+**Kết quả:** gold_export chỉ chạy 2 CTAS cùng lúc, mỗi cái 3GB max → không OOM. dbt + Superset vẫn query được song song.
+
+#### 2. Tối ưu gold_export — batch CTAS
+
+```python
+# export_gold_to_minio.py — thay vì chạy 30 CTAS liên tiếp
+# Chia thành 3 batch × 10 bảng, mỗi batch nghỉ 30s cho Trino dọn memory
+
+batches = [GOLD_DATASETS[0:10], GOLD_DATASETS[10:20], GOLD_DATASETS[20:30]]
+for batch in batches:
+    for ds in batch:
+        run_ctas(ds)
+    time.sleep(30)  # Cho Trino GC + giải phóng memory
+```
+
+#### 3. Metastore — file-based backup hoặc migrate Glue
+
+| Môi trường | Giải pháp | Tại sao |
+|---|---|---|
+| **Dev** | File-based + PVC backup cron (`tar` metastore dir → S3 mỗi ngày) | Đơn giản |
+| **Production** | **AWS Glue Catalog** | Managed, không corrupt, có versioning, tích hợp Trino native |
+
+```properties
+# Trino catalog config (production)
+hive.metastore=glue
+hive.metastore.glue.region=us-east-1
+hive.metastore.glue.catalogid=123456789012
+```
+
+#### 4. Auto partition sync
+
+```python
+# Sau khi spark_batch xong → gọi sync partitions
+# Thêm vào DAG: spark_batch >> sync_partitions >> dbt_build
+
+# Hoặc: Trino config tự động sync khi query
+hive.allow-drop-table=true
+hive.allow-rename-table=true
+hive.allow-add-column=true
+hive.auto-purge=true
+```
+
+Hoặc dùng Trino event listener hook — mỗi lần query, nếu partition không tồn tại → tự `CALL system.sync_partition_metadata()`.
+
+#### 5. Multi-node HA (production only)
+
+```yaml
+# Dev: 1 pod OK
+# Production: 1 coordinator + 2 workers
+coordinator:
+  replicas: 1
+  resources: {cpu: 1, memory: 8Gi}
+worker:
+  replicas: 2
+  resources: {cpu: 2, memory: 8Gi}
+```
+
+#### 6. Query monitoring
+
+```sql
+-- Trino có sẵn system.runtime.queries — Monitor DAG query bảng này
+SELECT query_id, user, query, state,
+       resource_group_id,
+       created, ended,
+       query_type
+FROM system.runtime.queries
+WHERE state IN ('RUNNING', 'QUEUED', 'BLOCKED')
+  AND created > now() - INTERVAL '1' HOUR
+
+-- Alert nếu:
+--   state = 'FAILED' trong 5 phút gần đây → Slack
+--   state = 'BLOCKED' > 2 phút → WARNING
+--   memory_pool.free_bytes < 10% → CRITICAL
+```
+
+### Kiến trúc Trino sau harden
+
+```mermaid
+flowchart LR
+    subgraph TRINO["Trino Cluster"]
+        CO["coordinator<br/>query planning"]
+        W1["worker-1<br/>execution"]
+        W2["worker-2<br/>execution"]
+    end
+
+    CO --> W1
+    CO --> W2
+
+    subgraph RESOURCE["Resource Groups"]
+        RG1["gold_export<br/>max 2 concurrent<br/>3GB/query"]
+        RG2["adhoc<br/>max 3 concurrent<br/>2GB/query"]
+    end
+
+    CO --> RESOURCE
+
+    S3_MINIO["MinIO / S3<br/>nyc-silver, nyc-gold"]
+    GLUE["Glue Catalog<br/>(metastore)"]
+
+    W1 --> S3_MINIO
+    W2 --> S3_MINIO
+    CO --> GLUE
+
+    MONITOR["Monitor DAG"] -.->|"query system.runtime.queries"| CO
+
+    style CO fill:#49a,stroke:#333,color:#fff
+    style W1 fill:#4a9,stroke:#333,color:#fff
+    style W2 fill:#4a9,stroke:#333,color:#fff
+    style GLUE fill:#e94,stroke:#333,color:#fff
+```
+
+### Pod count
+
+| Component | Dev | Production |
+|---|---|---|
+| Trino coordinator | 1 pod | 1 pod |
+| Trino worker | 0 (coordinator tự làm) | 2 pod |
+| **Tổng** | **1 pod** | **3 pod** |
+
+---
+
+## 14. dbt — Production Hardening
+
+### Vấn đề
+
+| # | Vấn đề | Hậu quả |
+|---|---|---|
+| 1 | **Không CI/CD** — đổi model, push thẳng | Model lỗi → dbt build fail → pipeline chết. Không test trước merge |
+| 2 | **Chỉ test not_null** — không bắt được business logic sai | `AVG(tip/total)` thay vì `SUM(tip)/SUM(total)` → metric sai, test vẫn pass |
+| 3 | **Không incremental model** — mỗi lần chạy scan toàn bộ | Data 5 năm → `fact_trips` scan 180M rows mỗi lần dbt build → chậm → Trino timeout |
+| 4 | **Không dbt docs** — không có data lineage | Ai cũng hỏi "bảng này đến từ đâu?" → phải đọc SQL thủ công |
+| 5 | **Toàn bộ model là view** — query chậm khi data lớn | Mỗi query Superset phải scan lại toàn bộ → 3-5 giây thay vì < 1 giây |
+
+### Thiết kế
+
+#### 1. CI/CD — test trước merge
+
+```yaml
+# .github/workflows/dbt-ci.yml (concept)
+name: dbt CI
+on: [pull_request]
+jobs:
+  dbt-test:
+    steps:
+      - run: dbt deps
+      - run: dbt build --target staging  # Chạy toàn bộ model + test trên staging Trino
+      - run: dbt test                     # Nếu fail → block merge
+```
+
+#### 2. Incremental model cho fact_trips
+
+```sql
+-- models/marts/fact_trips.sql — incremental thay vì view
+{{
+  config(
+    materialized='incremental',
+    unique_key='trip_id',
+    on_schema_change='append_new_columns'
+  )
+}}
+
+SELECT * FROM {{ ref('stg_trips') }}
+{% if is_incremental() %}
+  WHERE pickup_date >= (SELECT MAX(pickup_date) FROM {{ this }})
+{% endif %}
+```
+
+#### 3. Business assertion tests
+
+```yaml
+# tests/business_assertions.yml
+models:
+  - name: gold_executive_daily
+    tests:
+      - total_revenue_matches_fact:  # Custom singular test
+          query: |
+            WITH gold AS (
+              SELECT SUM(revenue) AS g FROM {{ ref('gold_executive_daily') }}
+            ),
+            fact AS (
+              SELECT SUM(total_amount) AS f FROM {{ ref('fact_trips') }}
+            )
+            SELECT * FROM gold, fact WHERE ABS(g - f) / NULLIF(f, 0) > 0.01
+```
+
+#### 4. dbt docs — auto generate + host
+
+```bash
+# Sau dbt build trong DAG:
+dbt docs generate
+# Host lên S3 static site hoặc dbt Cloud
+```
+
+---
+
+## 15. Superset — Production Hardening
+
+### Vấn đề
+
+| # | Vấn đề | Hậu quả |
+|---|---|---|
+| 1 | **Bootstrap không idempotent** — chạy lại là tạo duplicate | Dataset, chart, dashboard bị nhân đôi → UI loạn |
+| 2 | **Cache stale** — sau pipeline, dashboard vẫn hiện data cũ | User thấy số cũ, tưởng pipeline chưa chạy |
+| 3 | **Chart SQL không review** — ai cũng sửa trong SQL Lab | Metric sai → CEO nhìn số sai → mất niềm tin vào data |
+| 4 | **`position_json` cứng** — chart layout fix | Màn hình khác → chart chồng lên nhau |
+| 5 | **Security** — admin/admin, public endpoint | Ai cũng login được, xem hết dữ liệu |
+| 6 | **Không version control dashboard** | Sửa chart xong không có git history → không rollback được |
+
+### Thiết kế
+
+#### 1. Bootstrap idempotent
+
+```python
+# superset_bootstrap.py — check tồn tại trước khi tạo
+if not superset_api.get_database("Trino"):
+    superset_api.create_database(...)
+if not superset_api.get_dataset("fact_trips"):
+    superset_api.create_dataset(...)
+# ...
+```
+
+#### 2. Cache bust sau pipeline
+
+```python
+# Sau materialize_postgres → gọi Superset API refresh
+POST /api/v1/datasource/{id}/refresh
+POST /api/v1/chart/{id}/data  # Force re-query
+POST /api/v1/dashboard/{id}/embedded  # invalidate cache
+```
+
+#### 3. Chart SQL version control
+
+```
+# Lưu tất cả chart SQL trong repo:
+superset/charts/
+├── revenue_by_borough.sql
+├── daily_trips.sql
+├── dashboard_export.json    # Export full dashboard
+
+# superset_bootstrap.py đọc từ đây thay vì hardcode
+# PR required to change chart SQL
+```
+
+#### 4. Security tối thiểu
+
+```python
+# Environment variables thay vì hardcode
+SUPERSET_ADMIN_USER=${SUPERSET_ADMIN_USER}
+SUPERSET_ADMIN_PASSWORD=${SUPERSET_ADMIN_PASSWORD}
+SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY}
+
+# Public user chỉ đọc dashboard (không SQL Lab)
+# Admin user mới được edit
+```
+
+#### 5. Dashboard backup
+
+```bash
+# Export dashboard → git (chạy sau mỗi lần sửa)
+POST /api/v1/dashboard/export/
+# Import lại nếu cần rollback
+POST /api/v1/dashboard/import/
+```
+
+---
+
+## 16. Anomaly Check — Production Hardening
+
+### Vấn đề
+
+| # | Vấn đề | Hậu quả |
+|---|---|---|
+| 1 | **Informational only** — exit code luôn 0 | Phát hiện anomaly → vẫn cho pipeline chạy tiếp → data lỗi vào Superset |
+| 2 | **Chỉ check row count** — `dq_row_count_trend` | Không check: fare_amount anomaly, trip_distance anomaly, passenger_count spike |
+| 3 | **Không alert** — log ra stdout là hết | Anomaly chỉ hiện trong Airflow log → không ai đọc |
+| 4 | **Không có baseline** — không biết thế nào là "bình thường" | Alert dựa trên hardcoded threshold, không học từ lịch sử |
+
+### Thiết kế
+
+#### 1. Anomaly có quyền block (optional)
+
+```python
+# check_anomaly.py — thêm flag --block
+if anomaly_count > CRITICAL_THRESHOLD and args.block:
+    sys.exit(1)  # Block pipeline
+else:
+    sys.exit(0)  # Report only
+```
+
+#### 2. Mở rộng anomaly check
+
+```sql
+-- Không chỉ row count, mà check cả distribution
+SELECT pickup_date,
+       COUNT(*) AS trip_count,
+       AVG(fare_amount) AS avg_fare,
+       AVG(trip_distance) AS avg_distance,
+       SUM(total_amount) AS total_revenue
+FROM hive.mart.gold_fact_trips
+GROUP BY pickup_date
+
+-- So sánh với 7-day / 30-day rolling avg
+-- Flag nếu bất kỳ metric nào deviates > 3 stddev
+```
+
+#### 3. Alert integration
+
+```python
+# Gửi Slack alert khi phát hiện anomaly
+if anomaly_rows:
+    slack_webhook.post({
+        "text": f"🚨 Anomaly detected: {len(anomaly_rows)} days abnormal",
+        "attachments": [format_anomaly_table(anomaly_rows)]
+    })
+```
+
+#### 4. Baseline tự học
+
+```python
+# Dùng 30-day rolling window làm baseline
+# Không cần hardcode threshold
+baseline_avg = rolling_avg(metric, window=30)
+baseline_std = rolling_std(metric, window=30)
+if abs(current - baseline_avg) > 3 * baseline_std:
+    flag_anomaly()
+```
+
+---
+
+## 17. Implementation Priority
 
 ```mermaid
 gantt
@@ -956,3 +1432,5 @@ gantt
 | **Output Contracts** | Định nghĩa "data tốt" mỗi node | Manual review | N/A |
 | **Health Dashboard** | Superset dashboard 🟢🟠🔴 | Refresh 5 phút | N/A |
 | **Reconciliation** | Row count cross-check giữa các tầng | Inline trong MAIN | ✅ Yes |
+| **Pre-ingest Validation** | Validate raw files trước Spark | Trước spark_batch | ✅ Yes (file hỏng → quarantine) |
+| **CDC Chain** | Postgres + Debezium + Kafka + Spark Streaming | Continuous / @5min | ❌ No (alert only) |
